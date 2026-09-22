@@ -30,10 +30,14 @@ separate host):
     interstitial a local Playwright browser hits shows up here too,
     intermittently) and that it has no documented parameter to pin the
     exit country/locale. g2.com is behind DataDome (see `g2_parser.py`'s
-    module docstring), for which no automated solve path is known at all,
-    so treat this mode here as an untested alternative fetch path, not a
-    workaround. See engine `run()`'s `--scraper-api` docstring/help text
-    (added in a later stage) for what this means for a caller.
+    module docstring) — solvable via `captcha_solver.CaptchaType.
+    DATADOME_SLIDER` when driving a real browser directly, but the Scraper
+    API here is a ONE-SHOT HTTP fetch on 2Captcha's own infrastructure
+    with no local page/cookie-jar for this module's `solve_and_wait`-based
+    solving to apply a result INTO — so treat this mode here as an
+    untested alternative fetch path, not a workaround for a DataDome wall.
+    See engine `run()`'s `--scraper-api` docstring/help text (added in a
+    later stage) for what this means for a caller.
 
 Never construct a competitor's API call from this module.
 """

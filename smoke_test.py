@@ -1102,6 +1102,103 @@ def _():
     assert param.default is inspect.Parameter.empty
 
 
+@check(
+    "DataDome fix (2026-09-22): every _maybe_solve_captcha() call site in all three engines "
+    "passes proxy=/user_agent= — required for captcha_solver.CaptchaType.DATADOME_SLIDER's "
+    "DataDomeSliderTask to ever succeed (it has no proxyless path, unlike every other type). "
+    "Also confirms each engine's own _maybe_solve_captcha() wrapper actually accepts both params "
+    "and forwards them into solve_when_blocked() rather than swallowing them."
+)
+def _():
+    import ast as _ast
+
+    CALL_SITE_FUNCTIONS = ("scrape_category", "scrape_product_page", "scrape_pricing_page")
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        tree = _ast.parse(src, filename=path)
+
+        wrapper_accepts_both = False
+        wrapper_forwards_both = False
+        for node in _ast.walk(tree):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == "_maybe_solve_captcha":
+                arg_names = {a.arg for a in node.args.args} | {a.arg for a in node.args.kwonlyargs}
+                wrapper_accepts_both = "proxy" in arg_names and "user_agent" in arg_names
+                for n in _ast.walk(node):
+                    if (
+                        isinstance(n, _ast.Call)
+                        and (
+                            (isinstance(n.func, _ast.Name) and n.func.id == "solve_when_blocked")
+                            or (isinstance(n.func, _ast.Attribute) and n.func.attr == "solve_when_blocked")
+                        )
+                    ):
+                        fwd_kwargs = {kw.arg for kw in n.keywords}
+                        wrapper_forwards_both = "proxy" in fwd_kwargs and "user_agent" in fwd_kwargs
+        assert wrapper_accepts_both, f"{path}: _maybe_solve_captcha() doesn't accept proxy=/user_agent="
+        assert wrapper_forwards_both, (
+            f"{path}: _maybe_solve_captcha() doesn't forward proxy=/user_agent= into "
+            f"solve_when_blocked() — DataDomeSliderTask would always fail with warning_no_proxy "
+            f"even when a --proxy was configured for the run"
+        )
+
+        seen = set()
+        for node in _ast.walk(tree):
+            if not isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                continue
+            if node.name not in CALL_SITE_FUNCTIONS:
+                continue
+            calls = [
+                n for n in _ast.walk(node)
+                if isinstance(n, _ast.Call)
+                and (
+                    (isinstance(n.func, _ast.Name) and n.func.id == "_maybe_solve_captcha")
+                    or (isinstance(n.func, _ast.Attribute) and n.func.attr == "_maybe_solve_captcha")
+                )
+            ]
+            for call in calls:
+                seen.add(node.name)
+                kwargs = {kw.arg for kw in call.keywords}
+                assert "proxy" in kwargs and "user_agent" in kwargs, (
+                    f"{path}: {node.name}()'s call to _maybe_solve_captcha() is missing "
+                    f"proxy=/user_agent= — {sorted(kwargs)}"
+                )
+        assert seen == set(CALL_SITE_FUNCTIONS), (
+            f"{path}: expected all of {CALL_SITE_FUNCTIONS} to call _maybe_solve_captcha() with "
+            f"a captcha check present, only found calls in {sorted(seen)} (this test may be stale)"
+        )
+
+
+@check(
+    "DataDome fix (2026-09-22): every engine has a code path that calls "
+    "captcha_solver.parse_datadome_cookie() and applies the result via ITS OWN driver's native "
+    "cookie API when a DataDome slider challenge is solved (build_injection_script() returns None "
+    "for this type on purpose — a solve that's never applied is the exact 'documented feature "
+    "doesn't work' anti-pattern this family has shipped before)."
+)
+def _():
+    src = {path: (ROOT / path).read_text(encoding="utf-8") for path in ENGINE_FILES}
+
+    for path, text in src.items():
+        assert "parse_datadome_cookie" in text, f"{path}: never imports/calls parse_datadome_cookie()"
+        assert "DATADOME_SLIDER" in text, f"{path}: has no DATADOME_SLIDER-specific branch at all"
+
+    # Each engine's own native cookie call, not a generic string check —
+    # the point is that the RIGHT api for THAT driver is used.
+    assert "context.add_cookies(" in src["playwright_scraper.py"], (
+        "playwright_scraper.py: no context.add_cookies(...) call — Playwright's own native cookie API"
+    )
+    assert "driver.add_cookie(" in src["selenium_scraper.py"], (
+        "selenium_scraper.py: no driver.add_cookie(...) call — Selenium's own native cookie API"
+    )
+    assert "page.setCookie(" in src["puppeteer_scraper.py"], (
+        "puppeteer_scraper.py: no page.setCookie(...) call — pyppeteer's own native cookie API"
+    )
+    # And each reloads/refreshes afterward — a cookie sitting in the jar
+    # with nothing re-requesting the page is a solve that does nothing.
+    assert "page.reload(" in src["playwright_scraper.py"]
+    assert "driver.refresh()" in src["selenium_scraper.py"]
+    assert "page.reload(" in src["puppeteer_scraper.py"]
+
+
 # --------------------------------------------------------------------------- #
 # env_config — G2_* keys, placeholder detection, precedence (CLAUDE.md §17)
 # --------------------------------------------------------------------------- #

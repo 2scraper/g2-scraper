@@ -154,10 +154,12 @@ cp .env.example .env
 Leave `.env` blank for the first run — the whole point of "local-first" is
 that nothing in it is required. Fill in `TWOCAPTCHA_KEY` / `G2_PROXY` /
 `G2_CDP_ENDPOINT` later, only if you want to test those specifically. Worth
-knowing before you buy credit for this site: a 2Captcha key does not buy
-you a way through DataDome (nothing does). It buys proxies, fingerprints
-and the Scraping Browser API's own device identity — things that affect
-whether you get challenged at all.
+knowing before you buy credit for this site: a 2Captcha key DOES buy a way
+through DataDome's slider challenge (`DataDomeSliderTask`), but only
+alongside a proxy — `TWOCAPTCHA_KEY` with no `G2_PROXY`/`--proxy` set still
+cannot solve one. A key also buys proxies, fingerprints and the Scraping
+Browser API's own device identity on their own — things that affect
+whether you get challenged at all, independent of solving.
 
 ## 2. The most important run you can do: the first live engine run
 
@@ -180,14 +182,21 @@ Four outcomes, and what each one means:
   is the outcome the research predicts, and it has never been observed
   from this repo's own code. Confirming it is the whole point of this step.
 - **`exit code: 3` (blocked)**: check whether the log names
-  `vendor="datadome"`. If it does, that is the expected DataDome wall, not
-  a bug — note what you were running from (residential vs datacentre IP,
-  proxy, fingerprint, headful vs headless) and whether `--block-retries`
-  got past it. There is nothing to buy that solves it, so **what actually
-  helps the project is knowing what does and doesn't get challenged in the
-  first place.** If the log reports `detected_unidentified_widget`
-  instead, you have found a defense this repo has not seen — save a
-  scrubbed `--dump-html` capture and extend
+  `vendor="datadome"`. If it does and you were running with NO
+  `--proxy`/`--proxy-file`, re-run with one — `--solve-captcha` cannot
+  attempt `DataDomeSliderTask` without a proxy, so this outcome may just
+  mean the solve was never tried. If it recurs WITH a proxy configured,
+  that is either a genuinely failed solve (check the log for
+  `warning_solver_error`) or the slider-iframe pattern this repo detects
+  not matching what g2.com actually served — save a scrubbed `--dump-html`
+  capture either way; **what helps the project most here is knowing
+  whether the iframe pattern in `captcha_solver.py`'s
+  `_DATADOME_IFRAME_RE` matched a real g2.com page at all**, since it has
+  never been confirmed against one. Also note what you were running from
+  (residential vs datacentre IP, fingerprint, headful vs headless) and
+  whether `--block-retries` got past it regardless. If the log reports
+  `detected_unidentified_widget` instead, you have found a defense this
+  repo has not seen — save a scrubbed `--dump-html` capture and extend
   `g2_parser.BOT_CHALLENGE_MARKERS`.
 - **`exit code: 4` (zero products), no `.meta.json` written** (by design —
   see `output_writer.finish_run`): read the diagnostic line the engine

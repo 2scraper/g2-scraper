@@ -34,7 +34,7 @@ G2 publishes machine-readable resources of its own — `llms.txt`, an `/ai-instr
 
 **Pricing.** g2.com carries no price on a category card or a product page — anywhere. Pricing exists only as rendered text on a separate `/pricing` page, with no structured data behind it, and the parser for it is plain text matching that is explicitly weaker than the other two. `--with-pricing` opts into it; without that flag, the price columns are empty, and that is the correct result rather than a failure.
 
-**DataDome.** g2.com's confirmed bot protection is DataDome, and there is no automated solve path for it — not at 2Captcha, not anywhere. This scraper detects it and reports an honest "blocked" exit code naming the vendor, instead of burning a solve attempt on something nothing can solve. A 2Captcha key still buys proxies, fingerprints, and a managed browser session's own device identity — all of which affect whether you get challenged in the first place.
+**DataDome.** g2.com's confirmed bot protection is DataDome, and — corrected 2026-09-22 — it IS solvable: 2Captcha ships a dedicated `DataDomeSliderTask` for its interstitial slider challenge. `--solve-captcha` attempts it automatically, but it's the one captcha type here with no proxyless path, so a proxy has to be configured for a solve to actually happen. Without one, this scraper still detects the wall and reports an honest "blocked" exit code naming the vendor, rather than pretending a solve without a proxy would work. A 2Captcha key also buys proxies, fingerprints, and a managed browser session's own device identity — all of which affect whether you get challenged in the first place.
 
 ## 2Captcha products, when you want them
 

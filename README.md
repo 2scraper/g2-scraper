@@ -47,16 +47,22 @@ access can do for this repo.
 
 ## Read this before trusting a run
 
-- **DataDome is detected, not automated.** g2.com's confirmed bot
-  protection has no automated solve path — not at 2Captcha, not anywhere.
-  This repo therefore ships no `CaptchaType` for it at all: a DataDome wall
-  reports `action="unsupported_vendor"`, `vendor="datadome"` and exit `3`
-  (blocked). That is the same honest treatment `skyscanner-scraper` gives
-  PerimeterX on skyscanner.com — honest about being blocked, honest about
-  there being nothing to buy. A 2Captcha key still buys proxies,
-  fingerprints and the Scraping Browser API's own device identity, all of
-  which affect whether you get challenged in the first place. None of them
-  is a documented way through a wall once you hit one.
+- **DataDome IS solvable — corrected 2026-09-22.** This README originally
+  said DataDome had no automated solve path at all, the same bucket as
+  PerimeterX on skyscanner.com. That was wrong: 2Captcha ships a dedicated
+  `DataDomeSliderTask` for DataDome's own interstitial slider challenge
+  (https://2captcha.com/api-docs/datadome-slider-captcha). `--solve-captcha`
+  attempts it automatically when a slider iframe is detected — but it is
+  the **one** captcha type in this family with no proxyless path:
+  `--proxy`/`--proxy-file` is required, or the run gets
+  `action="unsupported_vendor"`, `vendor="datadome"`, exit `3` (blocked)
+  instead of a real attempt. The slider iframe pattern this repo detects
+  (`geo.captcha-delivery.com/captcha/?...&t=fe...`) is 2Captcha's own
+  documented vendor shape, **not** something captured from an actual
+  g2.com challenge — no engine here has ever seen g2.com present one. A
+  2Captcha key also still buys proxies, fingerprints and the Scraping
+  Browser API's own device identity, all of which affect whether you get
+  challenged in the first place.
 - **The three parsers are not equally reliable, and the README is the
   wrong place to be vague about it.**
   - `parse_category_listing()` — **solid.** Reads the card's
@@ -228,7 +234,7 @@ never drift apart.
 | `--page-delay` | `1.5` | Seconds between listing pages |
 | `--retries` | `2` | Retries on a page's navigation failure |
 | `--retry-delay` | `3.0` | Seconds between those retries |
-| `--block-retries` | `2` | On a blocked, zero-product outcome, retry on the **same** session/exit IP this many extra times. "Retry before you rotate" — a fresh proxy/CDP identity stays a manual decision between runs. Worth knowing here specifically: DataDome has no solve path, so retrying is one of the few levers this repo has |
+| `--block-retries` | `2` | On a blocked, zero-product outcome, retry on the **same** session/exit IP this many extra times. "Retry before you rotate" — a fresh proxy/CDP identity stays a manual decision between runs. Worth knowing here specifically: DataDome's own slider challenge IS solvable via `--solve-captcha` + a proxy (see "Read this before trusting a run" above) — without a proxy configured, retrying is one of the few other levers this repo has |
 
 **Pricing**
 
@@ -269,7 +275,7 @@ never drift apart.
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--solve-captcha` | `when-blocked` | `off` / `when-blocked` / `always`. Governs detection, reporting and arming the Scraping Browser API's own auto-solve for other widget types. **It does not promise a solve on this site** — DataDome has none |
+| `--solve-captcha` | `when-blocked` | `off` / `when-blocked` / `always`. Attempts 2Captcha's `DataDomeSliderTask` when a slider challenge is detected (**requires `--proxy`/`--proxy-file`** — no proxyless path exists for this type) and arms the Scraping Browser API's own auto-solve for other widget types. Without a proxy configured, a DataDome challenge is still just detected/reported, not solved |
 | `--twocaptcha-key` | — | (or `TWOCAPTCHA_KEY`) |
 | `--min-score` | `0.3` | 2Captcha's own `minScore` field on a reCAPTCHA v3 task |
 | `--captcha-api` | — | Override the 2Captcha REST base URL (testing only) |
@@ -399,9 +405,13 @@ wait buys is slack for DataDome's own asynchronous checks, not for content.
   top. Everything below the architecture line — that g2.com will actually
   serve these pages to a Playwright/Selenium/pyppeteer session from your IP
   — is untested. `TESTING.md` is the checklist.
-- **DataDome is detected, not automated.** No solve path exists for it
-  anywhere. A wall is an honest exit `3`, not a retry loop against a solver
-  that cannot help.
+- **DataDome IS solvable — with a proxy.** `--solve-captcha` attempts
+  2Captcha's `DataDomeSliderTask` automatically when a slider challenge is
+  detected, but only if `--proxy`/`--proxy-file` is set (no proxyless path
+  exists for this type). Without a proxy, a wall is an honest exit `3`,
+  not a retry loop against a solver that was never actually tried. The
+  slider-iframe pattern detected is 2Captcha's own documented vendor
+  shape, unconfirmed against a real g2.com capture.
 - **`parse_pricing_page()` is best-effort text matching.** No pricing
   JSON-LD exists on g2.com to back it. Empty output from it means "couldn't
   read", never "free".

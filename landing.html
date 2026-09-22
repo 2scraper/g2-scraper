@@ -280,11 +280,13 @@
       that is the correct result rather than a failure.
     </div>
     <div class="callout honest">
-      <strong>DataDome:</strong> g2.com's confirmed bot protection has no automated solve path — not at
-      2Captcha, not anywhere. This scraper detects it and reports an honest "blocked" exit code naming the
-      vendor, instead of burning a solve attempt on something nothing can solve. A 2Captcha key still buys
-      proxies, fingerprints and a managed browser session's own device identity, all of which affect whether
-      you get challenged in the first place.
+      <strong>DataDome:</strong> g2.com's confirmed bot protection is DataDome, and it IS solvable — 2Captcha
+      ships a dedicated DataDomeSliderTask for its interstitial slider challenge, attempted automatically via
+      <code>--solve-captcha</code>. It's the one captcha type here with no proxyless path, so a proxy must be
+      configured for a solve to actually happen; without one this scraper still detects the wall and reports
+      an honest "blocked" exit code naming the vendor. A 2Captcha key also buys proxies, fingerprints and a
+      managed browser session's own device identity, all of which affect whether you get challenged in the
+      first place.
     </div>
   </section>
 

@@ -9,6 +9,48 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (same day, after initial repo below): DataDome is solvable
+
+This repo's first version claimed g2.com's DataDome bot protection "has no
+automated solve path at all" — the same bucket as PerimeterX on
+skyscanner.com. That was wrong, caught by Roman (2Captcha's own team)
+pointing at 2Captcha's published `DataDomeSliderTask`
+(https://2captcha.com/api-docs/datadome-slider-captcha).
+
+- `captcha_solver.py`: new `CaptchaType.DATADOME_SLIDER`, detected via the
+  vendor-documented slider-iframe shape
+  (`geo.captcha-delivery.com/captcha/?...&t=fe...`); builds a real
+  `DataDomeSliderTask` — the one captcha type in this family with **no
+  proxyless path** (a proxy and a user agent are both required, or the
+  attempt is refused with a named warning rather than silently skipped or
+  crashing); new `parse_datadome_cookie()` turns the cookie-shaped solution
+  into a dict for a driver's native cookie API (this type's solution is a
+  `Set-Cookie` string, not a hidden-field token — `build_injection_script()`
+  correctly returns `None` for it).
+- `proxy_pool.py`: `Proxy.to_2captcha_task_dict()` — one shared builder so
+  all three engines send the DataDomeSliderTask proxy fields identically.
+- All three engines: `_maybe_solve_captcha()` now threads `proxy=`/
+  `user_agent=` through every one of its nine call sites (3 engines × 3
+  page shapes); a solved DataDome cookie is applied via each driver's own
+  native API (`context.add_cookies` / `driver.add_cookie` /
+  `page.setCookie`) and the page is reloaded — a cookie sitting unused in
+  the browser's cookie jar would have been a solve that silently did
+  nothing, the same "documented feature doesn't actually work" failure
+  mode this family has shipped before. `scrape_category()`'s pagination
+  loop also gained a post-solve re-read of the current page (previously
+  only `scrape_product_page()`/`scrape_pricing_page()` had one), so a solve
+  now pays off on the SAME page it was triggered by, not just the next one.
+- `smoke_test.py`: two new checks (81 total) — AST-level proof every call
+  site passes `proxy=`/`user_agent=` and that every engine has a
+  `parse_datadome_cookie()` + native-cookie-API + reload code path.
+- Every doc that repeated the original wrong claim (`README.md`,
+  `TESTING.md`, `landing.md`/`landing.html`, `CONTRIBUTING.md`, each
+  engine's own module docstring and `--solve-captcha`/`--block-retries`
+  help text) is corrected. Still true and unchanged: no engine in this
+  family has ever seen g2.com actually present this challenge, so the
+  slider-iframe detection pattern remains an unconfirmed, vendor-documented
+  shape, not a live g2.com capture.
+
 ### Added — 2026-09-22: initial repo
 
 - **Three engines for g2.com, one output contract.**
@@ -39,12 +81,13 @@ rather than being a silent violation of that.
   (`--proxy`/`--proxy-file`), the Scraping Browser API over CDP
   (`--cdp-endpoint`), the Fingerprint API (`--fingerprint`), the
   browserless Scraper API (`--scraper-api`), and captcha detection/solving
-  (`--solve-captcha`). **g2.com's confirmed bot protection is DataDome,
-  which is detected but not automated** — no automated solve path exists
-  for it at 2Captcha or anywhere else, so a DataDome wall is reported as
-  `unsupported_vendor` + `EXIT_BLOCKED` rather than silently retried
-  against a solver that cannot help. The default run is a plain local
-  headless Chromium with no key, no proxy and no account.
+  (`--solve-captcha`). **g2.com's confirmed bot protection is DataDome**,
+  solvable via 2Captcha's `DataDomeSliderTask` when `--proxy`/`--proxy-file`
+  is configured (see the Fixed entry below); without a proxy a DataDome
+  wall is reported as `unsupported_vendor` + `EXIT_BLOCKED` rather than
+  silently retried against a solve attempt that was never actually tried.
+  The default run is a plain local headless Chromium with no key, no proxy
+  and no account.
 - **robots.txt honoured at the stricter AI-crawler setting by default.**
   g2.com's robots.txt gives `ClaudeBot` and its peers exactly one rule the
   general group doesn't have (`Disallow: /products/*/reviews/*`), and this

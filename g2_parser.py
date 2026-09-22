@@ -33,20 +33,27 @@ writes the engine scripts next: `READINESS_WAIT_MS` (CLAUDE.md §5) can be
 materially SHORTER here than on an SPA family member — the only thing
 worth waiting on is DataDome's own asynchronous checks, not content.
 
-**CONFIRMED — bot protection is DataDome, and it has no solve path.**
-`window.DataDomeJsTag`, `window.dataDomeOptions.endpoint =
+**CONFIRMED — bot protection is DataDome. CORRECTED 2026-09-22: it IS
+solvable.** `window.DataDomeJsTag`, `window.dataDomeOptions.endpoint =
 "https://dd.g2.com/js/"`, version 5.10.0, and a `datadome` cookie were all
 observed live. `captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS` already
-contains the string `"datadome"`, so DETECTION works with no extra wiring;
-SOLVING does not exist, for anyone. This repo therefore deliberately ships
-NO `CaptchaType` member for DataDome — it uses
-`captcha_solver.identify_unsupported_vendor()` instead, restored from
-skyscanner-scraper, which faced exactly this with PerimeterX on
-skyscanner.com. A DataDome wall reports `unsupported_vendor` +
-`vendor="datadome"` and EXIT_BLOCKED: honest about being blocked, honest
-about there being nothing to buy. `# TODO(readme):` the README (a later
-stage) must say "detected, not automated" for this site, in the same words
-skyscanner-scraper's README uses for PerimeterX.
+contains the string `"datadome"`, so DETECTION works with no extra wiring.
+This module originally shipped the claim above — no `CaptchaType` member
+for DataDome, on the theory that no 2Captcha task type existed for it at
+all, the same bucket as PerimeterX on skyscanner.com. That claim was
+WRONG: Roman, from 2Captcha's own team, pointed at
+https://2captcha.com/api-docs/datadome-slider-captcha — a dedicated
+`DataDomeSliderTask` for exactly this vendor's own interstitial slider
+challenge. `captcha_solver.CaptchaType.DATADOME_SLIDER` now exists and is
+wired end-to-end in all three engines (cookie-based, requires a proxy — no
+proxyless path exists for it, unlike every other type this repo handles).
+`captcha_solver.identify_unsupported_vendor()` still fires for DataDome,
+but now means something narrower: the tag is present with no slider
+iframe currently on the page (the ordinary case on most loads), not "this
+vendor can never be solved." A DataDome wall with nothing solvable on it
+still reports `unsupported_vendor` + `vendor="datadome"` and EXIT_BLOCKED
+— honest about being blocked right now, no longer implying there's nothing
+to buy at all.
 
 **CONFIRMED — category listing page**, e.g.
 `https://www.g2.com/categories/crm`, paginated with `?page=N` (111 pages

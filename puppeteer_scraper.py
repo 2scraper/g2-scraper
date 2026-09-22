@@ -26,12 +26,17 @@ happened: shein-scraper's puppeteer `scrape_product_page()` accepted an
 warning. smoke_test.py now enforces the invariant structurally (AST-level,
 per function), so it cannot regress here unnoticed.
 
-**g2.com's confirmed defense is DataDome, which has no automated solve
-path anywhere** — on this engine or any other. A wall reports
-`unsupported_vendor`/`vendor="datadome"` + EXIT_BLOCKED: honest about being
-blocked, honest about there being nothing to buy. DataDome's own tag also
-ships on every healthy g2.com page, which is why a bare marker match never
-counts as a block on its own here.
+**g2.com's confirmed defense is DataDome — corrected 2026-09-22: it IS
+solvable.** This repo originally claimed no automated solve path existed
+for it at all; that was wrong (Roman, from 2Captcha's own team, pointed at
+https://2captcha.com/api-docs/datadome-slider-captcha — a dedicated
+`DataDomeSliderTask`). `--solve-captcha` now attempts it when a slider
+challenge is detected, but it is the ONE type in this family with no
+proxyless path: `--proxy`/`--proxy-file` is required. Without a proxy, a
+wall still reports `unsupported_vendor`/`vendor="datadome"` + EXIT_BLOCKED
+(honest, not a bug). DataDome's own tag also ships on every healthy
+g2.com page, which is why a bare marker match never counts as a block on
+its own here.
 
 Chromium binary: sourced from `PYPPETEER_EXECUTABLE_PATH` /
 `PUPPETEER_EXECUTABLE_PATH` if set (handy for reusing an existing
@@ -48,6 +53,7 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 try:
     from pyppeteer import connect as pyppeteer_connect
@@ -63,7 +69,9 @@ else:
 
 import env_config
 import g2_parser as gp
-from captcha_solver import CaptchaType, build_injection_script, detect_from_html, solve_when_blocked
+from captcha_solver import (
+    CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
+)
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run, merge_pages, sku_key as _sku_key
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
@@ -156,9 +164,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
         "--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked",
-        help="g2.com's confirmed defense is DataDome, which has NO automated solve path anywhere — "
-             "this flag governs detection/reporting and arms the Scraping Browser API's own "
-             "auto-solve for any OTHER widget type that might appear, it does not promise a solve.",
+        help="g2.com's confirmed defense is DataDome. This flag governs whether 2Captcha's "
+             "DataDomeSliderTask is attempted when a slider challenge is detected — REQUIRES "
+             "--proxy/--proxy-file, since that task type has no proxyless path — and also arms "
+             "the Scraping Browser API's own auto-solve for any other widget type that might "
+             "appear. Without a proxy, a DataDome challenge is reported as blocked, not solved.",
     )
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile's user agent (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
@@ -270,6 +280,7 @@ async def _enable_scraping_browser_auto_solve(page) -> None:
 async def _maybe_solve_captcha(
     *, html: str, url: str, client: Optional[TwoCaptchaClient], policy: str,
     count_product_links, min_score: float = 0.3, page=None,
+    proxy: Optional[Proxy] = None, user_agent: Optional[str] = None,
 ) -> Optional[dict]:
     """`count_product_links` is REQUIRED and has NO default, on purpose —
     see playwright_scraper._maybe_solve_captcha's docstring for the full
@@ -279,12 +290,21 @@ async def _maybe_solve_captcha(
         category listing page  ->  gp.count_result_cards
         product /reviews page  ->  gp.count_product_page_data
         /pricing page          ->  gp.count_pricing_tiers
+
+    `proxy` / `user_agent` — added 2026-09-22 alongside
+    `captcha_solver.CaptchaType.DATADOME_SLIDER` (this repo's original
+    claim that DataDome had no automated solve path at all was WRONG —
+    2Captcha ships a dedicated `DataDomeSliderTask`; see captcha_solver.py's
+    module docstring). Forwarded unchanged for every other captcha type
+    (ignored there); they matter only when a page turns out to be a
+    DataDome slider challenge, the one type with no proxyless path.
     """
     if policy == "off" or client is None:
         return None
     result = solve_when_blocked(
         client=client, page_url=url, html=html, count_product_links=count_product_links,
         extra_markers=gp.BOT_CHALLENGE_MARKERS, min_score=min_score,
+        proxy=proxy.to_2captcha_task_dict() if proxy else None, user_agent=user_agent,
     )
     action = result.get("action")
     if action == "no_captcha_detected":
@@ -297,37 +317,78 @@ async def _maybe_solve_captcha(
         log.warning("Captcha solve failed: %s", result.get("detail"))
     elif action == "solved":
         log.info("Captcha solved via 2Captcha (%s).", result.get("captcha_type"))
-        # See captcha_solver.build_injection_script's docstring for the
-        # honesty caveat: each branch uses that widget's own STANDARD,
-        # publicly documented convention, never anything confirmed against
-        # a real g2.com capture.
-        if page is not None:
-            script = build_injection_script(CaptchaType(result["captcha_type"]), result["token"])
-            if script is None:
-                log.info(
-                    "No generic injection point for %s — token was solved but not written into "
-                    "the page (this is expected for reCAPTCHA v3; see captcha_solver.py).",
-                    result.get("captcha_type"),
-                )
-            else:
+        if result.get("captcha_type") == CaptchaType.DATADOME_SLIDER.value:
+            # Set-Cookie-shaped solution, not a hidden-field token —
+            # build_injection_script() returns None for this type on
+            # purpose. pyppeteer's Page.setCookie(*cookies) mirrors
+            # puppeteer.js's own API (name/value/domain/path/secure/
+            # sameSite dicts).
+            if page is not None:
                 try:
-                    injected = await page.evaluate(script)
+                    cookie = parse_datadome_cookie(result["token"])
+                    host = (urlparse(url).hostname or "").lower()
+                    apex = host[4:] if host.startswith("www.") else host
+                    # No Domain attribute rides in 2Captcha's own example
+                    # response — defaults to the parent domain (".g2.com")
+                    # because that's DataDome's own real-world convention,
+                    # NOT something confirmed against an actual g2.com
+                    # Set-Cookie header (never captured — see
+                    # captcha_solver.py's module docstring).
+                    cookie["domain"] = f".{apex}" if apex else host
+                    await page.setCookie({
+                        "name": cookie["name"], "value": cookie["value"],
+                        "domain": cookie["domain"], "path": cookie["path"],
+                        "secure": cookie["secure"], "sameSite": cookie["same_site"],
+                    })
                     log.info(
-                        "Injected solved %s into the page (found a target element/callback: %s) "
-                        "— unconfirmed whether a real g2.com widget reads this "
-                        "standard-convention field/callback.",
-                        result.get("captcha_type"), bool(injected),
+                        "Applied the solved DataDome cookie via page.setCookie (domain=%s, confirmed "
+                        "against pyppeteer==2.0.0's actual Page.setCookie signature/source in this "
+                        "environment) and reloading — this repo has never seen g2.com actually "
+                        "present this challenge, so whether the reload then clears it is UNCONFIRMED.",
+                        cookie["domain"],
                     )
-                except Exception as exc:  # noqa: BLE001 — a failed injection degrades, never crashes the run
-                    log.warning("Captcha solved but injecting it into the page failed: %s", exc)
+                    await page.reload({"waitUntil": "domcontentloaded", "timeout": NAV_TIMEOUT_MS})
+                    await asyncio.sleep(READINESS_WAIT_S)
+                except Exception as exc:  # noqa: BLE001 — solved-but-apply-failed degrades, never crashes
+                    log.warning("DataDome solved but applying the cookie / reloading failed: %s", exc)
+        else:
+            # See captcha_solver.build_injection_script's docstring for the
+            # honesty caveat: each branch uses that widget's own STANDARD,
+            # publicly documented convention, never anything confirmed against
+            # a real g2.com capture.
+            if page is not None:
+                script = build_injection_script(CaptchaType(result["captcha_type"]), result["token"])
+                if script is None:
+                    log.info(
+                        "No generic injection point for %s — token was solved but not written into "
+                        "the page (this is expected for reCAPTCHA v3; see captcha_solver.py).",
+                        result.get("captcha_type"),
+                    )
+                else:
+                    try:
+                        injected = await page.evaluate(script)
+                        log.info(
+                            "Injected solved %s into the page (found a target element/callback: %s) "
+                            "— unconfirmed whether a real g2.com widget reads this "
+                            "standard-convention field/callback.",
+                            result.get("captcha_type"), bool(injected),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — a failed injection degrades, never crashes the run
+                        log.warning("Captcha solved but injecting it into the page failed: %s", exc)
     elif action == "unsupported_vendor":
-        # The EXPECTED outcome on g2.com — see playwright_scraper.py's copy
-        # of this branch. A confirmed gap, not a bug.
+        # The EXPECTED outcome on a healthy g2.com page load. For
+        # "datadome" specifically this does NOT mean unsolvable any more
+        # (corrected 2026-09-22 — see captcha_solver.py's module
+        # docstring): it means DataDome's always-present tag was seen but
+        # no slider iframe was on THIS page. For other vendors in this
+        # bucket (PerimeterX, a Cloudflare managed challenge) it still
+        # means "confirmed, no 2Captcha task type exists at all."
         log.warning(
-            "%s challenge detected — no automated solve exists for this defense at 2Captcha or "
-            "anywhere else (confirmed gap, not a bug). Reporting this run as blocked. Your levers "
-            "are --block-retries (retry the same session), a different --proxy exit, or a "
-            "--cdp-endpoint session with its own device identity.",
+            "%s marker present, no currently-solvable challenge found on this page — reporting "
+            "this run as blocked. If this vendor is 'datadome' and a slider challenge was expected, "
+            "confirm --proxy/--proxy-file is set (DataDomeSliderTask has no proxyless path); "
+            "otherwise your levers are --block-retries (retry the same session), a different "
+            "--proxy exit, or a --cdp-endpoint session with its own device identity.",
             result.get("vendor"),
         )
     elif action == "detected_unidentified_widget":
@@ -444,7 +505,14 @@ async def scrape_category(
                 min_score=args.min_score, page=page,
                 # LISTING-page-shaped counter.
                 count_product_links=gp.count_result_cards,
+                proxy=proxy, user_agent=user_agent,
             )
+            if captcha_result and captcha_result.get("action") == "solved":
+                # See playwright_scraper.scrape_category's identical
+                # 2026-09-22 addition: without this, a solve on THIS
+                # page_num only ever paid off starting next page_num.
+                await asyncio.sleep(READINESS_WAIT_S)
+                html = await page.content()
             if captcha_result and captcha_result.get("action") in STILL_BLOCKED_ACTIONS:
                 if gp.count_result_cards(html) == 0:
                     blocked = True
@@ -489,6 +557,7 @@ async def scrape_category(
         await _enrich_with_pricing(
             args=args, products=merged, page=page,
             client=client, autosolve=autosolve,
+            proxy=proxy, user_agent=user_agent,
         )
 
     if args.dump_html and last_html:
@@ -545,6 +614,7 @@ async def scrape_product_page(
             # every normal product page by construction (bug class 2 in
             # g2_parser.py's module docstring).
             count_product_links=gp.count_product_page_data,
+            proxy=proxy, user_agent=user_agent,
         )
         if captcha_result and captcha_result.get("action") == "solved":
             await asyncio.sleep(READINESS_WAIT_S)
@@ -560,6 +630,7 @@ async def scrape_product_page(
         await _enrich_with_pricing(
             args=args, products=products, page=page,
             client=client, autosolve=autosolve,
+            proxy=proxy, user_agent=user_agent,
         )
 
     if args.dump_html:
@@ -578,6 +649,7 @@ async def scrape_product_page(
 async def scrape_pricing_page(
     *, args: argparse.Namespace, start_url: str, page,
     client: Optional[TwoCaptchaClient], autosolve: bool = False,
+    proxy: Optional[Proxy] = None, user_agent: Optional[str] = None,
 ) -> Tuple[List[gp.PricingTier], bool, bool]:
     """Load ONE `/products/{slug}/pricing` page on an ALREADY-OPEN page and
     return `(tiers, blocked, remote_api_error)`.
@@ -611,6 +683,7 @@ async def scrape_pricing_page(
             min_score=args.min_score, page=page,
             # PRICING-page-shaped counter.
             count_product_links=gp.count_pricing_tiers,
+            proxy=proxy, user_agent=user_agent,
         )
         if captcha_result and captcha_result.get("action") == "solved":
             await asyncio.sleep(READINESS_WAIT_S)
@@ -625,6 +698,7 @@ async def scrape_pricing_page(
 async def _enrich_with_pricing(
     *, args: argparse.Namespace, products: List[Product], page,
     client: Optional[TwoCaptchaClient], autosolve: bool = False,
+    proxy: Optional[Proxy] = None, user_agent: Optional[str] = None,
 ) -> None:
     """`--with-pricing`: fill price/currency/price_source in place from each
     product's own `/pricing` page, up to `--pricing-limit` products. Never
@@ -642,6 +716,7 @@ async def _enrich_with_pricing(
             tiers, blocked, remote_error = await scrape_pricing_page(
                 args=args, start_url=gp.pricing_url(slug), page=page,
                 client=client, autosolve=autosolve,
+                proxy=proxy, user_agent=user_agent,
             )
         except Exception as exc:  # noqa: BLE001 — enrichment never costs the rows it decorates
             log.warning("Pricing lookup for %s raised — leaving its price empty: %s", slug, exc)
@@ -678,6 +753,7 @@ async def scrape_pricing_only(
 
     tiers, blocked, remote_api_error = await scrape_pricing_page(
         args=args, start_url=start_url, page=page, client=client, autosolve=autosolve,
+        proxy=proxy, user_agent=user_agent,
     )
     if args.dump_html:
         try:
