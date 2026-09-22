@@ -120,6 +120,8 @@ MIN_CARD_MATCHES = gp.MIN_CARD_MATCHES  # 2 — a single stray card-shaped
 # skyscanner-scraper, which hit the identical situation with PerimeterX.
 STILL_BLOCKED_ACTIONS = (
     "warning_no_key",
+    "warning_no_proxy",
+    "warning_proxy_banned",
     "warning_solver_error",
     "detected_unidentified_widget",
     "unsupported_vendor",
@@ -383,6 +385,29 @@ async def _maybe_solve_captcha(
         log.info("Captcha-like marker present but this page's content is already rendered — not solving.")
     elif action == "warning_no_key":
         log.warning("Captcha solving skipped: %s", result.get("detail"))
+    elif action == "warning_no_proxy":
+        # Pre-existing gap, found and fixed 2026-09-22 alongside
+        # warning_proxy_banned below: this action had NO branch at all
+        # here before today — captcha_solver.py has returned it since
+        # DataDomeSliderTask's proxy-required guard was added, but nothing
+        # ever logged it, so a DataDome challenge with no --proxy set
+        # reported EXIT_BLOCKED (via the separate captcha_detected-and-no-
+        # cards check above, unaffected by this gap) with no explanation
+        # of why a solve was never even attempted.
+        log.warning("Captcha solving skipped: %s", result.get("detail"))
+    elif action == "warning_proxy_banned":
+        # Confirmed live, 2026-09-22 (Roman, real proxy-mode run against
+        # g2.com — see captcha_solver.py's module docstring): 2Captcha
+        # itself refuses a DataDomeSliderTask when the challenge URL's own
+        # `t` marker says DataDome already has this exact proxy exit
+        # flagged. Retrying on the SAME session (--block-retries) will not
+        # help — only a genuinely different --proxy/--proxy-file exit can.
+        log.warning(
+            "Captcha solve refused by 2Captcha (this proxy's exit IP is already flagged by "
+            "DataDome, not a transient error): %s — a different --proxy/--proxy-file exit "
+            "(a fresh session) is the fix; retrying on this same one will not help.",
+            result.get("detail"),
+        )
     elif action == "warning_solver_error":
         log.warning("Captcha solve failed: %s", result.get("detail"))
     elif action == "solved":

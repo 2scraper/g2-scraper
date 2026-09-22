@@ -98,6 +98,8 @@ MIN_CARD_MATCHES = gp.MIN_CARD_MATCHES
 # difference, not the exit code.
 STILL_BLOCKED_ACTIONS = (
     "warning_no_key",
+    "warning_no_proxy",
+    "warning_proxy_banned",
     "warning_solver_error",
     "detected_unidentified_widget",
     "unsupported_vendor",
@@ -348,6 +350,20 @@ def _maybe_solve_captcha(
         log.info("Captcha-like marker present but this page's content is already rendered — not solving.")
     elif action == "warning_no_key":
         log.warning("Captcha solving skipped: %s", result.get("detail"))
+    elif action == "warning_no_proxy":
+        # Pre-existing gap, found and fixed 2026-09-22 alongside
+        # warning_proxy_banned below — see playwright_scraper.py's
+        # identical comment for the full story.
+        log.warning("Captcha solving skipped: %s", result.get("detail"))
+    elif action == "warning_proxy_banned":
+        # Confirmed live, 2026-09-22 — see captcha_solver.py's module
+        # docstring and playwright_scraper.py's identical branch.
+        log.warning(
+            "Captcha solve refused by 2Captcha (this proxy's exit IP is already flagged by "
+            "DataDome, not a transient error): %s — a different --proxy/--proxy-file exit "
+            "(a fresh session) is the fix; retrying on this same one will not help.",
+            result.get("detail"),
+        )
     elif action == "warning_solver_error":
         log.warning("Captcha solve failed: %s", result.get("detail"))
     elif action == "solved":

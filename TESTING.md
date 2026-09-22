@@ -61,15 +61,38 @@ never fired `Captcha.detected` across three tries — see
 `captcha_solver.py`'s module docstring for the full reasoning, including
 why that's evidence and not proof).
 
-**What still has NOT happened: a successful scrape against real g2.com, and
-specifically a run of the REST `DataDomeSliderTask` path (`G2_PROXY`, no
-`--cdp-endpoint`) against a real DataDome challenge.** The run above used
-`--cdp-endpoint`, which never reaches this module's own solve path at all —
-`G2_PROXY` gets ignored the moment a CDP session is present. Proving or
-disproving whether this repo's own captcha-solving code (not 2Captcha's
-Scraping Browser extension) can get through the `/interstitial/` shape
-needs a proxy-mode run, and costs real 2Captcha balance to attempt — a
-deliberate next step, not something to run casually.
+**What HAS also now happened, 2026-09-22 (same day, later still): a THIRD
+real run — proxy mode this time, `G2_PROXY` with `--cdp-endpoint`
+commented out of `.env`, same command otherwise.** This reached a REAL
+2Captcha `createTask` call for `DataDomeSliderTask` for the first time
+ever in this repo — and 2Captcha refused it: `ERROR_BAD_PARAMETERS Your
+captcha_url value contains "t=bv", that means your IP address is banned.`
+DataDome had already flagged that proxy session's exit IP; 2Captcha
+refuses a doomed solve rather than attempting one. This earned its keep
+twice over: it confirmed the ORIGINAL `/captcha/` iframe pattern (in this
+repo since before today, previously only 2Captcha's own documented shape)
+is ALSO real — `title="DataDome CAPTCHA"`, a different `dd.rt` value
+(`'c'`) than the earlier `/interstitial/` capture's `'i'`, scrubbed at
+`tests/fixtures/g2_datadome_captcha_banned_ip.html` — and it surfaced two
+silent gaps: this specific rejection had no distinct outcome
+(`captcha_solver.py` now returns `action="warning_proxy_banned"` for it,
+with a log line in all three engines saying plainly "rotate your proxy,
+retrying won't help"), and while fixing that, tracing the code found that
+`warning_no_proxy` — a real, already-tested action — had NO log branch at
+all in any engine, silently falling through with zero output (never a
+correctness bug, since the separate `captcha_detected and not
+cards_present` check already reported `EXIT_BLOCKED` correctly — purely a
+silent-diagnostics gap, now also fixed). See `CHANGELOG.md` for the full
+write-up.
+
+**What still has NOT happened: a successful scrape against real g2.com, or
+a `DataDomeSliderTask` solve attempt that ISN'T immediately rejected for an
+already-flagged IP.** All three real runs so far used proxy/CDP identities
+DataDome had already flagged or challenged hard. Whether
+`DataDomeSliderTask` can actually solve either real shape (`/captcha/` or
+`/interstitial/`) when the exit IP ISN'T already burned needs a genuinely
+fresh proxy session to test, and costs real 2Captcha balance to attempt —
+a deliberate next step, not something to run casually.
 
 Everything `smoke_test.py` and `local_e2e_test.py` prove, they prove
 against fixtures built from those captures — real shapes, a real browser, a
@@ -84,7 +107,7 @@ the one thing still untested.
 
 ## What `smoke_test.py` actually covers
 
-85 checks, all offline, all passing with **no** engine driver installed
+88 checks, all offline, all passing with **no** engine driver installed
 (`python3 smoke_test.py`). What they are, by category — these are the real
 groupings in the file, not a generic template:
 

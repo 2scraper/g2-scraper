@@ -634,6 +634,22 @@ def solve_when_blocked(
         # landing in one generic bucket.
         if signal.captcha_type == CaptchaType.DATADOME_SLIDER and "requires a proxy" in str(exc):
             return {"action": "warning_no_proxy", "detail": str(exc)}
+        # Confirmed live, 2026-09-22 (Roman, real proxy-mode run against
+        # g2.com — see module docstring): 2Captcha's own createTask rejects
+        # a DataDomeSliderTask outright with `ERROR_BAD_PARAMETERS ... "t=
+        # bv" ... your IP address is banned` when the challenge URL's own
+        # `t` marker says DataDome has already flagged the requesting IP —
+        # this is 2Captcha refusing a doomed solve, not a transient error,
+        # and no different proxy/fingerprint on the SAME exit will fix it.
+        # Split out from the generic bucket for the same reason
+        # "requires a proxy" is above: the actionable fix (rotate to a
+        # different proxy session/exit) is different from "retry the same
+        # one" or "check your key," and a caller/metrics consumer deserves
+        # to tell them apart. Matched on the stable human sentence 2Captcha
+        # appends to every such rejection, not the specific `t=bv` value
+        # (undocumented whether that is the only banned-IP marker).
+        if signal.captcha_type == CaptchaType.DATADOME_SLIDER and "ip address is banned" in str(exc).lower():
+            return {"action": "warning_proxy_banned", "detail": str(exc)}
         return {"action": "warning_solver_error", "detail": str(exc)}
 
 

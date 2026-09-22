@@ -30,25 +30,25 @@ could do.
 
 | Area | Status | How it was actually verified |
 |---|---|---|
-| Offline test suite | **85/85 passing** | `python3 smoke_test.py`, run 2026-09-22, with no engine driver installed |
+| Offline test suite | **88/88 passing** | `python3 smoke_test.py`, run 2026-09-22, with no engine driver installed |
 | g2.com page structure — category card DOM + its `data-event-options` JSON, product-page `SoftwareApplication` JSON-LD, pricing-page text, pagination markup | **Verified live, 2026-09-22** | A real browser navigating real g2.com pages (a browser tool), transcribed into `g2_parser.py` as `CONFIRMED` — **not** through this repo's own engines |
 | DataDome is the bot protection | **Verified live, 2026-09-22** | `window.DataDomeJsTag`, `dataDomeOptions.endpoint = "https://dd.g2.com/js/"` v5.10.0 and a `datadome` cookie, observed on a real page |
 | `robots.txt`, incl. the stricter AI-crawler group | **Verified live, 2026-09-22** | Fetched and read; the one extra rule is transcribed in `g2_parser.py` |
 | `categories/{slug}/grids.json` exists and returns a ranked *subset* | **Verified live, 2026-09-22** | 253 products returned for `crm`, against 1661 found by paginating the category DOM. **Not wired into this repo** — see "Known limitations" |
 | **All three engines, end-to-end, real browser/driver** | **Run for the first time, 2026-09-22 — against a local stand-in, NOT real g2.com** | A local HTTP server serving the exact confirmed fixture shapes (reused from `smoke_test.py`) plus a local stand-in 2Captcha `createTask`/`getTaskResult` server. Every real engine ran its real browser through real navigation, pagination (incl. resuming from a `?page=N` `--url` — see the Fixed entry below), parsing, a full `DataDomeSliderTask` solve round trip (cookie applied via the driver's own native API, page reloaded, healthy content served on retry), output writing, and exit codes 0/2/3/5. This is real proof the PIPELINE works; it is not proof g2.com's real markup still matches `g2_parser.py`'s captured shapes — see the next row |
-| This repo's engine scripts run against **live g2.com specifically** | **Run for the first time, 2026-09-22 — from outside this build/test environment (whose own egress blocks g2.com entirely, confirmed the same day), and it got blocked** | Roman, `playwright_scraper.py --category crm --solve-captcha when-blocked --dump-html`, real `--cdp-endpoint` (Scraping Browser API) + a real 2Captcha key. Result: HTTP 403, a real DataDome interstitial challenge (`geo.captcha-delivery.com/interstitial/?...`, `title="DataDome Device Check"`), zero products, exit `3` (blocked) after 3 retries on the same session — not a scrape success, but real proof the run reaches g2.com, that this repo's block-detection reports it honestly, and it's what surfaced (and fixed) the bug below. The scrubbed capture is `tests/fixtures/g2_datadome_interstitial.html` |
+| This repo's engine scripts run against **live g2.com specifically** | **Run TWICE for real, 2026-09-22 — from outside this build/test environment (whose own egress blocks g2.com entirely, confirmed the same day), both blocked** | Run 1 (`--cdp-endpoint`): HTTP 403, a real DataDome interstitial (`geo.captcha-delivery.com/interstitial/?...`, `title="DataDome Device Check"`, capture at `tests/fixtures/g2_datadome_interstitial.html`) — surfaced and fixed the `/interstitial/`-path bug below. Run 2 (`G2_PROXY`, no `--cdp-endpoint`): HTTP 403, the OTHER real DataDome shape (`.../captcha/?...`, `title="DataDome CAPTCHA"`, a real `t=bv` banned-IP marker, capture at `tests/fixtures/g2_datadome_captcha_banned_ip.html`) — reached a REAL `DataDomeSliderTask` `createTask` call for the first time, which 2Captcha itself refused (`ERROR_BAD_PARAMETERS ... your IP address is banned`). Neither run scraped a product — but both are real, and each found and fixed a real gap; see `CHANGELOG.md` |
 | Pricing text parser against a live pricing page | **Parser verified against captured page text, and now against a local fixture through a real engine — not yet against a real g2.com pricing page** | The captured text shape is real; the local fixture run (above) proves the whole fetch-parse-write path works; no engine has fetched a REAL pricing page itself |
-| 2Captcha integrations (proxy, `--cdp-endpoint`, fingerprint, `--scraper-api`) | **Mixed: `DataDomeSliderTask` verified end-to-end against a local stand-in (2026-09-22); the real `--cdp-endpoint` run above answered (not proved, but real evidence for) whether the Scraping Browser's own auto-solve covers DataDome — leaning "not currently"; the REST `DataDomeSliderTask` path (via `G2_PROXY`, no `--cdp-endpoint`) still has NOT been tried against real g2.com** | See `captcha_solver.py`'s module docstring and the newest `CHANGELOG.md` entry for the full real-run write-up. Trying the REST path against real g2.com is the next concrete step, and costs real 2Captcha balance to attempt |
+| 2Captcha integrations (proxy, `--cdp-endpoint`, fingerprint, `--scraper-api`) | **Mixed, updated after two real runs: `DataDomeSliderTask` verified end-to-end against a local stand-in (2026-09-22); the `--cdp-endpoint` run found real evidence (not proof) that the Scraping Browser's own auto-solve doesn't currently cover DataDome; the REST `DataDomeSliderTask` path now HAS reached a real 2Captcha `createTask` call against g2.com — and got a real, informative rejection (the proxy's own IP was already DataDome-flagged), not a solve** | See `captcha_solver.py`'s module docstring and `CHANGELOG.md`'s two newest entries. Still open: whether `DataDomeSliderTask` can actually solve either real shape when the proxy exit ISN'T already flagged — needs a fresh, unflagged proxy session to test, and costs real 2Captcha balance |
 | CI workflows | **Written, never executed** | No GitHub remote is configured yet — `TESTING.md` step 12 is how they first run |
 
 So: **the site knowledge is real, the architecture is tested, the whole
 pipeline has been proven to work end-to-end against a local stand-in, and
-now it has also been run once for real against g2.com itself — which
-blocked it, exactly as this repo's own detection said it should, and in
-doing so pointed at a real bug (now fixed) and a real open question (now
-narrowed, not closed).** `TESTING.md` is the checklist for what's still
-open, and a proxy-mode (no `--cdp-endpoint`) run against real g2.com is
-the single highest-value thing left to try.
+it has now been run twice for real against g2.com itself — both blocked,
+exactly as this repo's own detection said they should be, and each run
+found (and fixed) something real: a missed challenge shape, then a silent
+gap in how a real 2Captcha rejection was reported.** `TESTING.md` is the
+checklist for what's still open, and a fresh (not-already-flagged) proxy
+session is the single highest-value thing left to try.
 
 ## Read this before trusting a run
 
@@ -61,19 +61,24 @@ the single highest-value thing left to try.
   the **one** captcha type in this family with no proxyless path:
   `--proxy`/`--proxy-file` is required, or the run gets
   `action="unsupported_vendor"`, `vendor="datadome"`, exit `3` (blocked)
-  instead of a real attempt. This repo now recognizes BOTH the iframe
-  shape 2Captcha's own docs describe (`geo.captcha-delivery.com/captcha/?
-  ...&t=fe...`) AND the shape g2.com was actually caught serving,
-  2026-09-22 (`geo.captcha-delivery.com/interstitial/?...`,
-  `title="DataDome Device Check"` — the real, scrubbed capture is
-  `tests/fixtures/g2_datadome_interstitial.html`; see `CHANGELOG.md` for
-  the bug this fixed). Whether `DataDomeSliderTask` actually solves the
-  `/interstitial/` shape the same way it solves `/captcha/` is still
-  unconfirmed — that capture came from a `--cdp-endpoint` run, where this
-  module's own solve path never even fires (see the next bullet). A
-  2Captcha key also still buys proxies, fingerprints and the Scraping
-  Browser API's own device identity, all of which affect whether you get
-  challenged in the first place.
+  instead of a real attempt. This repo now recognizes BOTH iframe shapes
+  g2.com has actually been caught serving, 2026-09-22 —
+  `geo.captcha-delivery.com/interstitial/?...` (`title="DataDome Device
+  Check"`, `tests/fixtures/g2_datadome_interstitial.html`) AND
+  `.../captcha/?...` (`title="DataDome CAPTCHA"`,
+  `tests/fixtures/g2_datadome_captcha_banned_ip.html` — this one ALSO
+  confirmed 2Captcha's own documented pattern is real, not just their
+  own docs) — DataDome serves a different shape depending on how risky it
+  judges the request. A real `DataDomeSliderTask` attempt against the
+  `/captcha/` shape WAS made (proxy mode, no `--cdp-endpoint`) and got a
+  real, informative rejection — 2Captcha refuses to even try when the
+  challenge's own `t=` marker says the proxy's IP is already banned
+  (`action="warning_proxy_banned"`, not a crash, not silence — see
+  `CHANGELOG.md`). Whether a solve actually succeeds against either shape
+  with a fresh, not-already-flagged proxy is still unconfirmed. A 2Captcha
+  key also still buys proxies, fingerprints and the Scraping Browser API's
+  own device identity, all of which affect whether you get challenged in
+  the first place.
 - **`DataDomeSliderTask` and `--cdp-endpoint` do not combine.** The proxy
   this task type requires and a `--cdp-endpoint` session are mutually
   exclusive across this whole family (same rule as `--proxy` itself — a
@@ -466,7 +471,7 @@ wait buys is slack for DataDome's own asynchronous checks, not for content.
 ## Development
 
 ```bash
-python3 smoke_test.py      # 85 checks, no engine driver required
+python3 smoke_test.py      # 88 checks, no engine driver required
 python3 env_config.py      # shows what .env / the environment applied, never a secret
 python3 diff_runs.py a.json b.json   # added / removed / changed / source_changed between two completed runs
 ```

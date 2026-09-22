@@ -416,13 +416,30 @@ def _():
         assert "unsupported_vendor" in mod.STILL_BLOCKED_ACTIONS, (
             f"{mod.__name__}: a DataDome wall would not be counted as blocked"
         )
-        for expected in ("warning_no_key", "warning_solver_error", "detected_unidentified_widget"):
+        for expected in (
+            "warning_no_key", "warning_no_proxy", "warning_proxy_banned",
+            "warning_solver_error", "detected_unidentified_widget",
+        ):
             assert expected in mod.STILL_BLOCKED_ACTIONS, f"{mod.__name__}: missing {expected!r}"
     for path in ENGINE_FILES:
         src = (ROOT / path).read_text(encoding="utf-8")
         assert 'action == "unsupported_vendor"' in src, (
             f"{path}: no dedicated log branch naming the vendor — a DataDome wall would report the "
             f"misleading 'no known widget/sitekey could be extracted' instead"
+        )
+
+
+@check("all three engines have a dedicated log branch for 'warning_no_proxy' and 'warning_proxy_banned' — added 2026-09-22 after both fell through their if/elif chain with NO log line at all (warning_no_proxy: a pre-existing gap since DataDomeSliderTask's proxy-required guard was added; warning_proxy_banned: the new action itself, added the same day after a real 2Captcha rejection — see captcha_solver.py's module docstring)")
+def _():
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert 'action == "warning_no_proxy"' in src, (
+            f"{path}: DataDomeSliderTask with no proxy would silently report EXIT_BLOCKED with "
+            f"no explanation of why a solve was never attempted"
+        )
+        assert 'action == "warning_proxy_banned"' in src, (
+            f"{path}: a 2Captcha 'IP address is banned' rejection would silently report EXIT_BLOCKED "
+            f"with no hint that rotating the proxy (not retrying the same one) is the actual fix"
         )
 
 
@@ -859,6 +876,42 @@ def _():
     # Confirms the scrub didn't accidentally leave a real single-use token behind.
     for leaked_prefix in ("AHrlqAAAAAMAzHjDxiNG", "229542D5C186C7F5A5BB", "pg9Z1U1y5BqoS3mpc38t"):
         assert leaked_prefix not in real_html, f"scrubbed fixture still contains a real token: {leaked_prefix}"
+
+
+@check("a SECOND real scrubbed g2.com capture (tests/fixtures/g2_datadome_captcha_banned_ip.html — Roman's first real PROXY-mode run, 2026-09-22) confirms the /captcha/ path is ALSO real, not just 2Captcha's own documented shape — and carries a real t=bv (banned-IP) marker this repo had never seen before")
+def _():
+    fixture_path = Path(__file__).parent / "tests" / "fixtures" / "g2_datadome_captcha_banned_ip.html"
+    real_html = fixture_path.read_text(encoding="utf-8")
+    assert "geo.captcha-delivery.com/captcha/" in real_html, "fixture must still contain the real /captcha/ iframe shape"
+    assert 'title="DataDome CAPTCHA"' in real_html
+    assert "t=bv" in real_html, "fixture must still carry the real banned-IP marker that triggered the 2Captcha rejection"
+    signal = captcha_solver.identify_widget(real_html)
+    assert signal is not None
+    assert signal.captcha_type == captcha_solver.CaptchaType.DATADOME_SLIDER
+    assert signal.captcha_url.startswith("https://geo.captcha-delivery.com/captcha/?"), signal.captcha_url
+    for leaked_prefix in ("AHrlqAAAAAMAIb9c2R7M", "229542D5C186C7F5A5BB", "0JtQjAIQwoWdsfsQT057", "e4f173767bec32fc76ef"):
+        assert leaked_prefix not in real_html, f"scrubbed fixture still contains a real token: {leaked_prefix}"
+
+
+@check("solve_when_blocked() reports action='warning_proxy_banned' — not the generic 'warning_solver_error' — when 2Captcha rejects a DataDomeSliderTask because the challenge's own t= marker says the proxy's IP is already banned (a REAL 2Captcha response, confirmed live 2026-09-22: 'ERROR_BAD_PARAMETERS ... your IP address is banned')")
+def _():
+    class _BannedIPClient:
+        api_key = "fake"
+        def solve_and_wait(self, task):
+            raise scraper_api_client.TwoCaptchaError(
+                'createTask failed: ERROR_BAD_PARAMETERS Your captcha_url value contains "t=bv", '
+                "that means your IP address is banned."
+            )
+
+    result = captcha_solver.solve_when_blocked(
+        client=_BannedIPClient(), page_url="https://www.g2.com/categories/crm",
+        html=DATADOME_SLIDER_WALL_HTML, count_product_links=gp.count_result_cards,
+        extra_markers=gp.BOT_CHALLENGE_MARKERS,
+        proxy={"type": "http", "address": "eu.proxy.2captcha.com", "port": 2334, "login": "l", "password": "p"},
+        user_agent="Mozilla/5.0",
+    )
+    assert result["action"] == "warning_proxy_banned", result
+    assert "banned" in result["detail"].lower()
 
 
 @check("solve_when_blocked() for a DataDome slider challenge with NO proxy supplied returns 'warning_no_proxy' — never a crash, never a silently-skipped solve — because DataDomeSliderTask has no proxyless variant")

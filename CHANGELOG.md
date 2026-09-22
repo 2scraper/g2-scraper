@@ -9,7 +9,44 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
-### Fixed — 2026-09-22 (same day, latest): the first real live g2.com run, one real bug found, one real question answered
+### Fixed — 2026-09-22 (same day, latest of three): a second real live run, a real 2Captcha rejection surfaced two silent gaps
+
+Roman's follow-up run — same command, but with `--cdp-endpoint` commented
+out of `.env` so `G2_PROXY` actually drove the browser — reached a REAL
+2Captcha `createTask` call for the first time ever in this repo. 2Captcha
+rejected it: `ERROR_BAD_PARAMETERS Your captcha_url value contains
+"t=bv", that means your IP address is banned.` — DataDome had already
+flagged that proxy exit, and 2Captcha refuses a doomed solve rather than
+attempting one. Two real things came out of this:
+
+- **The `/captcha/` iframe path — this repo's ORIGINAL DataDome pattern,
+  in place since before today's other fix — is now ALSO confirmed live**
+  (previously only 2Captcha's own documented shape, never captured from
+  g2.com itself). `title="DataDome CAPTCHA"`, `dd.rt:'c'` (vs. the
+  `/interstitial/` capture's `rt:'i'` from the earlier `--cdp-endpoint`
+  run) — DataDome serves a DIFFERENT challenge shape depending on how
+  risky it judges the request, and this repo has now seen both live. The
+  scrubbed capture (including the real `t=bv` marker) is
+  `tests/fixtures/g2_datadome_captcha_banned_ip.html`.
+- **Bug: a rejected DataDomeSliderTask task had no distinct outcome, and
+  two related actions had NO LOG LINE AT ALL in any engine.**
+  `captcha_solver.solve_when_blocked()` now returns
+  `action="warning_proxy_banned"` for this specific, documented 2Captcha
+  rejection (split from the generic `warning_solver_error` bucket the
+  same way `warning_no_proxy` already was, for the same reason: the fix —
+  rotate to a different proxy exit — is different from "retry the same
+  one"). Tracing the log line down into all three engines surfaced an
+  independent, pre-existing gap: `warning_no_proxy` had been a real,
+  tested `captcha_solver.py` action since DataDomeSliderTask's
+  proxy-required guard was added, but no engine had a log branch for it
+  at all — it silently fell through the if/elif chain with **zero** log
+  output (the run still correctly reported `EXIT_BLOCKED`, via the
+  separate `captcha_detected and not cards_present` check, so this was
+  never a correctness bug — purely a silent-diagnostics one). Both gaps
+  fixed in all three engines' `_maybe_solve_captcha()`, with matching
+  entries added to each engine's `STILL_BLOCKED_ACTIONS`.
+
+### Fixed — 2026-09-22 (same day, earlier): the first real live g2.com run, one real bug found, one real question answered
 
 Roman's own first live run — `--cdp-endpoint` (the Scraping Browser API)
 plus a real 2Captcha key, `--category crm`, `--solve-captcha when-blocked`

@@ -40,11 +40,11 @@ COPY env_config.py proxy_pool.py output_writer.py captcha_solver.py \
 # .env.example sync check, CLAUDE.md §17) — leaving it out crashes the
 # build the same way a missing .py module above would.
 COPY .env.example ./
-# The one real (scrubbed) HTML capture smoke_test.py reads off disk rather
-# than building inline — leaving this out crashes the build with a
-# FileNotFoundError the moment RUN python3 smoke_test.py reaches its
+# The two real (scrubbed) HTML captures smoke_test.py reads off disk
+# rather than building inline — leaving either out crashes the build with
+# a FileNotFoundError the moment RUN python3 smoke_test.py reaches its
 # check, same failure class as the two omissions above.
-COPY tests/fixtures/g2_datadome_interstitial.html tests/fixtures/
+COPY tests/fixtures/g2_datadome_interstitial.html tests/fixtures/g2_datadome_captcha_banned_ip.html tests/fixtures/
 
 RUN python3 smoke_test.py
 
