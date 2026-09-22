@@ -230,7 +230,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -460,6 +460,32 @@ def category_slug_from_url(url: Optional[str]) -> Optional[str]:
         path = "/" + path
     m = _CATEGORY_SLUG_RE.match(path)
     return m.group(1) if m else None
+
+
+def page_number_from_url(url: Optional[str]) -> int:
+    """The `3` out of `https://www.g2.com/categories/crm?page=3` — 1 when
+    there's no `page` query param, and 1 for anything unparsable (a bad
+    page value is a request to start over, not a crash).
+
+    **Bug this closes (found live-testing 2026-09-22, no live g2.com
+    report yet):** every engine's `scrape_category()` calls
+    `category_slug_from_url()` to recover the slug for its own
+    `category_url(slug, page_num)` pagination rebuild, but until now
+    NOTHING recovered the page number the same way — the loop always
+    started `page_num` at 1 regardless of what `--url` actually said, so
+    `--url ".../categories/crm?page=2"`, this module's OWN docstring
+    example one function up, silently started over at page 1 instead of
+    picking up at page 2. Every engine's `scrape_category()` now starts
+    its loop at `page_number_from_url(start_url)` instead of a hardcoded
+    `1` when a slug (and therefore a rebuildable URL) is available."""
+    if not url:
+        return 1
+    try:
+        raw = parse_qs(urlparse(url).query).get("page", ["1"])[0]
+        page = int(raw)
+    except (ValueError, IndexError):
+        return 1
+    return page if page > 0 else 1
 
 
 def make_sku(product_slug: Optional[str], url: Optional[str]) -> str:

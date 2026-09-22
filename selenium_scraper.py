@@ -317,10 +317,29 @@ def _maybe_solve_captcha(
     """
     if policy == "off" or client is None:
         return None
+    # Bug found live-testing 2026-09-22: `user_agent` was ONLY ever
+    # non-None via --fingerprint (see run()) — meaning a run with
+    # --proxy/--twocaptcha-key/--solve-captcha but WITHOUT --fingerprint
+    # could never solve a real DataDome slider at all, always hitting
+    # captcha_solver.py's "requires user_agent" guard, even though neither
+    # README nor TESTING.md ever documented --fingerprint as a
+    # prerequisite (only a proxy is documented as required). Falling back
+    # to the ACTUAL live page's own navigator.userAgent when no
+    # --fingerprint UA was supplied is not just a workaround — 2Captcha's
+    # own docs say to send "the SAME modern browser UA the challenge will
+    # be presented back to", and the real page's own UA is a strictly more
+    # correct answer to that than a Fingerprint-API string could ever be
+    # when the two might not even match the browser actually solving it.
+    effective_user_agent = user_agent
+    if effective_user_agent is None and driver is not None:
+        try:
+            effective_user_agent = driver.execute_script("return navigator.userAgent")
+        except Exception as exc:  # noqa: BLE001 — best-effort fallback only
+            log.warning("Could not read the live page's navigator.userAgent for a DataDome solve attempt: %s", exc)
     result = solve_when_blocked(
         client=client, page_url=url, html=html, count_product_links=count_product_links,
         extra_markers=gp.BOT_CHALLENGE_MARKERS, min_score=min_score,
-        proxy=proxy.to_2captcha_task_dict() if proxy else None, user_agent=user_agent,
+        proxy=proxy.to_2captcha_task_dict() if proxy else None, user_agent=effective_user_agent,
     )
     action = result.get("action")
     if action == "no_captcha_detected":
@@ -481,6 +500,11 @@ def scrape_category(
     pages_completed = 0
 
     slug = gp.category_slug_from_url(start_url) or args.category
+    # Bug fixed 2026-09-22: this loop used to always start at page_num=1,
+    # silently discarding any `?page=N` the caller's own `--url` carried —
+    # see gp.page_number_from_url()'s docstring for the full story (its own
+    # docstring example, `--url ".../categories/crm?page=2"`, didn't work).
+    start_page = gp.page_number_from_url(start_url) if slug else 1
     proxy = proxy_pool.next() if proxy_pool else None
     log.info("Using proxy %s", proxy.masked() if proxy else "(no local proxy pool — direct connection, or a --cdp-endpoint session providing its own exit)")
     driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
@@ -490,7 +514,7 @@ def scrape_category(
     last_html = ""
 
     try:
-        for page_num in range(1, args.max_pages + 1):
+        for page_num in range(start_page, start_page + args.max_pages):
             page_url = gp.category_url(slug, page_num) if slug else start_url
             status, last_error = _goto_with_retries(
                 driver, page_url, retries=args.retries, retry_delay=args.retry_delay,
@@ -499,7 +523,7 @@ def scrape_category(
             if last_error is not None:
                 log.error("Listing page %d permanently failed to load: %s", page_num, last_error)
                 failed_pages.append(page_num)
-                if page_num == 1:
+                if page_num == start_page:
                     remote_api_error = True
                     break
                 continue
@@ -544,7 +568,7 @@ def scrape_category(
 
             products = gp.safe_parse_category_listing(html, category_slug=slug, page_url=page_url)
             if not products:
-                if page_num == 1 and not blocked:
+                if page_num == start_page and not blocked:
                     log.warning(
                         "No products recognised on the first listing page (%s) — either this "
                         "category genuinely has no results, g2_parser.py's card selectors need "
@@ -569,7 +593,7 @@ def scrape_category(
 
             if sum(len(pg) for pg in pages) >= args.max_results:
                 break
-            if page_num >= args.max_pages:
+            if page_num >= start_page + args.max_pages - 1:
                 break
             if not gp.has_next_page(html):
                 log.info("Page %d's own pagination advertises no Next page — stopping.", page_num)

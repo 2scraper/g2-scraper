@@ -9,6 +9,61 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (same day, after the two entries below): first real end-to-end test run, two real bugs found and fixed
+
+This repo had never once been driven by a real browser end-to-end before
+today — every prior check was offline (`smoke_test.py`) or against fakes.
+A local stand-in for g2.com (exact confirmed HTML/JSON-LD/pagination
+shapes, reused from `smoke_test.py`'s own fixtures) plus a stand-in
+2Captcha `createTask`/`getTaskResult` server let all three real engines
+run their real browsers through the real pipeline — navigation, retries,
+parsing, pagination, captcha detection, a full `DataDomeSliderTask` solve
+round trip (cookie applied via each driver's own native API, page
+reloaded, healthy content served on the retry), output writing and every
+documented exit code — for the first time. Two real, user-facing bugs
+turned up:
+
+- **`--url ".../categories/{slug}?page=N"` silently ignored `page=N` and
+  always restarted at page 1.** `scrape_category()`'s pagination loop
+  rebuilds each page's URL from the slug (`category_slug_from_url()` +
+  `category_url()`), but nothing ever recovered the page NUMBER the same
+  way — the loop always started at a hardcoded 1. This broke `g2_parser.
+  py`'s and `playwright_scraper.py`'s OWN documented usage example,
+  `--url "https://www.g2.com/categories/crm?page=2"`, which looked like it
+  should resume at page 2 and instead silently restarted the category from
+  page 1. New `g2_parser.page_number_from_url()` recovers it (1 for
+  anything missing/unparsable/non-positive — a bad value means "start
+  over", not a crash); all three engines' `scrape_category()` now start
+  their loop at `page_number_from_url(start_url)`, and every place that
+  used to special-case `page_num == 1` to mean "the first request of this
+  run" now correctly says `page_num == start_page`. Caught live: running
+  `--url ".../categories/crm?page=2"` against the local fixture returned
+  page 1's products until this fix, page 2's after it.
+- **A `--solve-captcha`/`--proxy`/`--twocaptcha-key` run with no
+  `--fingerprint` could never actually solve a real DataDome slider.**
+  `user_agent` (mandatory for `DataDomeSliderTask` — see the entry below)
+  was ONLY ever populated via `--fingerprint`'s Fingerprint API call;
+  without it, every solve attempt hit captcha_solver.py's own "requires
+  user_agent" guard and gave up, even though neither README nor
+  TESTING.md ever documented `--fingerprint` as a second prerequisite —
+  only a proxy was. All three engines' `_maybe_solve_captcha()` now falls
+  back to the ACTUAL live page's own `navigator.userAgent` (via
+  `page.evaluate`/`driver.execute_script`) whenever no `--fingerprint` UA
+  was supplied — arguably more correct than a Fingerprint-API string
+  regardless, since 2Captcha's own docs ask for "the SAME modern browser
+  UA the challenge will be presented back to," and the real page's own UA
+  is definitionally that. Caught live: a full `DataDomeSliderTask` round
+  trip against a local fake 2Captcha server failed with "requires
+  user_agent" until this fix, then succeeded end-to-end (cookie applied,
+  page reloaded, healthy content served) after it.
+
+`smoke_test.py` gained 2 new checks for the first bug (unit-level for
+`page_number_from_url()`, structural for all three engines using it) —
+83 total. The second bug has no offline-testable regression (it only
+shows up against a real page/driver), so its only regression coverage is
+this changelog entry and the live run that proved it — a gap worth
+knowing about, not hiding.
+
 ### Clarified — 2026-09-22 (same day, after the DataDome fix below): `--cdp-endpoint` does not extend it
 
 Roman asked directly whether the new `DataDomeSliderTask` support also

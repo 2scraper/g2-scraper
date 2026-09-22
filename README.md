@@ -30,18 +30,20 @@ could do.
 
 | Area | Status | How it was actually verified |
 |---|---|---|
-| Offline test suite | **74/74 passing** | `python3 smoke_test.py`, run 2026-09-22, with no engine driver installed |
+| Offline test suite | **83/83 passing** | `python3 smoke_test.py`, run 2026-09-22, with no engine driver installed |
 | g2.com page structure — category card DOM + its `data-event-options` JSON, product-page `SoftwareApplication` JSON-LD, pricing-page text, pagination markup | **Verified live, 2026-09-22** | A real browser navigating real g2.com pages (a browser tool), transcribed into `g2_parser.py` as `CONFIRMED` — **not** through this repo's own engines |
 | DataDome is the bot protection | **Verified live, 2026-09-22** | `window.DataDomeJsTag`, `dataDomeOptions.endpoint = "https://dd.g2.com/js/"` v5.10.0 and a `datadome` cookie, observed on a real page |
 | `robots.txt`, incl. the stricter AI-crawler group | **Verified live, 2026-09-22** | Fetched and read; the one extra rule is transcribed in `g2_parser.py` |
 | `categories/{slug}/grids.json` exists and returns a ranked *subset* | **Verified live, 2026-09-22** | 253 products returned for `crm`, against 1661 found by paginating the category DOM. **Not wired into this repo** — see "Known limitations" |
-| This repo's engine scripts run against live g2.com | **Never run. Not once, in any engine.** | The environment this repo was built in blocks the egress an engine run needs — `curl https://www.g2.com/` returns HTTP 403 from the proxy on every attempt. Not a bug in the scraper; it needs a human or a CI runner with real network access |
-| Pricing text parser against a live pricing page | **Parser verified against captured page text only** | The captured text shape is real; no engine has fetched a pricing page itself |
-| 2Captcha integrations (proxy, `--cdp-endpoint`, fingerprint, `--scraper-api`) | **Exercised offline against fakes; never with a real key against g2.com** | `smoke_test.py` drives each path end-to-end with a fake client |
+| **All three engines, end-to-end, real browser/driver** | **Run for the first time, 2026-09-22 — against a local stand-in, NOT real g2.com** | A local HTTP server serving the exact confirmed fixture shapes (reused from `smoke_test.py`) plus a local stand-in 2Captcha `createTask`/`getTaskResult` server. Every real engine ran its real browser through real navigation, pagination (incl. resuming from a `?page=N` `--url` — see the Fixed entry below), parsing, a full `DataDomeSliderTask` solve round trip (cookie applied via the driver's own native API, page reloaded, healthy content served on retry), output writing, and exit codes 0/2/3/5. This is real proof the PIPELINE works; it is not proof g2.com's real markup still matches `g2_parser.py`'s captured shapes — see the next row |
+| This repo's engine scripts run against **live g2.com specifically** | **Still never run. Not once, in any engine.** | The environment this repo was built AND tested in blocks the egress an engine run against the real site needs — `curl https://www.g2.com/` returns HTTP 403 from the proxy on every attempt, confirmed again 2026-09-22. Not a bug in the scraper; it needs a human or a CI runner with real network access — see `TESTING.md` step 2 |
+| Pricing text parser against a live pricing page | **Parser verified against captured page text, and now against a local fixture through a real engine — not yet against a real g2.com pricing page** | The captured text shape is real; the local fixture run (above) proves the whole fetch-parse-write path works; no engine has fetched a REAL pricing page itself |
+| 2Captcha integrations (proxy, `--cdp-endpoint`, fingerprint, `--scraper-api`) | **`DataDomeSliderTask` now verified end-to-end against a local stand-in 2Captcha server (2026-09-22, see above); everything else still only exercised offline against `smoke_test.py`'s fakes; nothing yet with a real key against real g2.com** | See the Fixed changelog entry for exactly what the live DataDome run proved, and found and fixed along the way |
 | CI workflows | **Written, never executed** | No GitHub remote is configured yet — `TESTING.md` step 12 is how they first run |
 
-So: **the site knowledge is real and the architecture is tested; the
-end-to-end run is not.** `TESTING.md` is the checklist for closing that
+So: **the site knowledge is real, the architecture is tested, and now the
+whole pipeline has been proven to actually work end-to-end — just not yet
+against the real site.** `TESTING.md` is the checklist for closing that
 gap, and its step 2 is the single highest-value thing anyone with network
 access can do for this repo.
 

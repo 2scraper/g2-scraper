@@ -28,24 +28,42 @@ findings were transcribed into `g2_parser.py`'s module docstring, marked
   subset of a category (253 products for `crm`, against 1661 found by
   paginating the DOM).
 
-**What has NOT happened: a single run of THIS repo's own engine scripts
-against g2.com.** Not a failed one — none has been attempted successfully,
-because the environment this repo was built in blocks the network egress an
-engine run needs. A plain `curl https://www.g2.com/` returns HTTP 403 from
-the egress proxy on every attempt. That is an environment/network-policy
-gap, not a bug in the scraper, and the fix is running the commands below
-from a machine that isn't behind that policy (or widening the allowlist to
-include `www.g2.com` and `cdn.playwright.dev` for the browser download).
+**What HAS since happened, 2026-09-22: a real end-to-end run of all three
+engines — against a local stand-in for g2.com, not the real site.**
+`local_e2e_test.py` (see its own section below) spins up a local HTTP
+server serving the exact CONFIRMED shapes above plus a stand-in 2Captcha
+server, and drives each real engine's real browser through the real
+pipeline against them: navigation, retries, parsing, pagination (including
+resuming from a `?page=N` in `--url` — a bug this run found and fixed, see
+CHANGELOG.md), captcha detection, a full `DataDomeSliderTask` solve round
+trip (cookie applied via the driver's own native API, page reloaded,
+healthy content served — this run found and fixed a second bug too, the
+missing user-agent fallback, also in CHANGELOG.md), output writing, and
+every exit code the architecture defines. This is real, meaningful
+progress — it is proof the PIPELINE moves data correctly through a real
+browser, which offline `smoke_test.py` alone could never show.
 
-Everything `smoke_test.py` proves, it proves against fixtures built from
-those captures — real shapes, but not a real request. **Closing that gap is
-this repo's single highest-value remaining check.** Until it is closed,
-treat "the parser reads this shape correctly" as established and "the
-engine successfully gets this shape out of g2.com" as untested.
+**What still has NOT happened: a single run of THIS repo's own engine
+scripts against the REAL g2.com.** Not a failed one — none has been
+attempted successfully, because the environment this repo was built AND
+live-tested in blocks the network egress an engine run against the real
+site needs. A plain `curl https://www.g2.com/` returns HTTP 403 from the
+egress proxy on every attempt, confirmed again 2026-09-22 from two separate
+sandboxes. That is an environment/network-policy gap, not a bug in the
+scraper, and the fix is running the commands below from a machine that
+isn't behind that policy.
+
+Everything `smoke_test.py` and `local_e2e_test.py` prove, they prove
+against fixtures built from those captures — real shapes, a real browser, a
+real pipeline, but not a real request to g2.com itself. **Closing that
+specific gap is this repo's single highest-value remaining check.** Until
+it is closed, treat "the parser reads this shape correctly, and the whole
+engine pipeline actually works" as established, and "g2.com's real markup
+still matches that shape today" as the one thing still untested.
 
 ## What `smoke_test.py` actually covers
 
-74 checks, all offline, all passing with **no** engine driver installed
+83 checks, all offline, all passing with **no** engine driver installed
 (`python3 smoke_test.py`). What they are, by category — these are the real
 groupings in the file, not a generic template:
 
@@ -137,6 +155,50 @@ groupings in the file, not a generic template:
 
 What `smoke_test.py` cannot do is tell you whether g2.com will serve any of
 those shapes to *your* browser from *your* IP. That's the checklist below.
+It also can't tell you whether a real browser, driven by this repo's own
+engine code, actually gets from a page load to a written output row —
+because it never launches one. `local_e2e_test.py` (next section) closes
+*that* gap without needing real g2.com access at all; the numbered
+checklist after it is for the one thing that still requires the real site.
+
+## `local_e2e_test.py` — real browsers, real pipeline, no live g2.com needed
+
+Added 2026-09-22, the same day this repo got its first real end-to-end run
+(see CHANGELOG.md — that run found and fixed two real bugs neither
+`smoke_test.py` nor a code review had caught). It spins up a tiny local
+HTTP server serving the exact CONFIRMED fixture shapes `smoke_test.py`
+already uses, plus a stand-in 2Captcha `createTask`/`getTaskResult` server,
+and drives each real installed engine's real browser through the real
+pipeline against them — no network access to g2.com or a 2Captcha key
+required, which is exactly why this can run in CI or any sandboxed
+environment `smoke_test.py` can, unlike the checklist below.
+
+```bash
+# whichever engine(s) you have installed — a driver that isn't installed
+# is SKIPPED, not failed, same posture as smoke_test.py
+pip install -r requirements-playwright.txt   # and/or -selenium / -puppeteer
+python3 local_e2e_test.py --engines playwright
+python3 local_e2e_test.py --engines playwright,selenium,puppeteer
+```
+
+What it actually proves, per engine: a healthy multi-page category run
+merges correctly; `--url ".../categories/crm?page=2"` truly resumes at
+page 2 (the regression test for the pagination bug this run found); a
+product page fills `rating_10` and leaves `rating_5` empty; a DataDome wall
+with no proxy/key reports `EXIT_BLOCKED` and writes no file. Playwright
+additionally gets the full `DataDomeSliderTask` round trip: task payload
+sent to the stand-in 2Captcha server (proxy fields and a real
+`navigator.userAgent`, both asserted present), solved cookie applied via
+the driver's own native cookie API, page reloaded, healthy content served
+on the retry.
+
+**What this does NOT prove**: that g2.com's real markup still matches
+these CONFIRMED-as-of-2026-09-22 shapes. Only the numbered checklist below,
+against the real site, can tell you that.
+
+If your sandbox's pyppeteer can't auto-download its bundled Chromium (a
+network-egress-policy problem, same flavor as the g2.com block below, not
+a bug here), point it at any installed Chromium with `--chromium-path`.
 
 Run everything below from a normal terminal on a machine with real network
 access — wherever this repo lives for you.

@@ -1276,6 +1276,49 @@ def _():
     assert gp.category_slug_from_url("https://www.g2.com/products/x/reviews") is None
 
 
+@check(
+    "BUG found live-testing 2026-09-22, now fixed: page_number_from_url() recovers the `?page=N` "
+    "a caller's --url carried, the missing counterpart to category_slug_from_url() that every "
+    "engine's scrape_category() rebuilds its pagination from. Before this, this module's OWN "
+    "docstring example one function up (`--url '.../categories/crm?page=2'`) silently started "
+    "over at page 1 instead of picking up at page 2."
+)
+def _():
+    assert gp.page_number_from_url("https://www.g2.com/categories/crm?page=3") == 3
+    assert gp.page_number_from_url("https://www.g2.com/categories/crm") == 1
+    assert gp.page_number_from_url(None) == 1
+    # Garbage/non-positive page values degrade to "start over", not a crash.
+    assert gp.page_number_from_url("https://www.g2.com/categories/crm?page=abc") == 1
+    assert gp.page_number_from_url("https://www.g2.com/categories/crm?page=0") == 1
+    assert gp.page_number_from_url("https://www.g2.com/categories/crm?page=-5") == 1
+
+
+@check(
+    "all three engines' scrape_category() actually START their pagination loop at "
+    "gp.page_number_from_url(start_url), not a hardcoded 1 — the structural half of the check "
+    "above, since scrape_category() needs a real browser to exercise behaviourally offline"
+)
+def _():
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert "start_page = gp.page_number_from_url(start_url) if slug else 1" in src, (
+            f"{path}: scrape_category() must derive its starting page from the caller's --url, "
+            f"not assume page 1"
+        )
+        assert "for page_num in range(start_page, start_page + args.max_pages):" in src, (
+            f"{path}: pagination loop must start at start_page, not a hardcoded 1"
+        )
+        # The two `page_num == 1` special cases ("this is the first request
+        # of the run") must have moved to `page_num == start_page` too — a
+        # stray literal `1` here would silently misfire the "first page
+        # failed" / "first page had zero products" branches whenever
+        # start_page != 1.
+        assert "page_num == 1" not in src, (
+            f"{path}: a literal 'page_num == 1' survived the start_page fix — "
+            f"should be 'page_num == start_page'"
+        )
+
+
 @check("make_sku prefers the URL SLUG (the one identifier present on BOTH a listing card and that product's own detail page) and falls back to a DETERMINISTIC fingerprint, never a random value — diff_runs.py must see the same sku for the same product across two runs")
 def _():
     assert gp.make_sku("hubspot-sales-hub", "https://www.g2.com/products/hubspot-sales-hub/reviews") == "hubspot-sales-hub"
