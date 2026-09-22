@@ -1,0 +1,189 @@
+name: canary
+
+on:
+  schedule:
+    - cron: "17 7 * * *"   # once daily; avoid :00 so it doesn't pile up with everyone else's
+  workflow_dispatch: {}     # dispatch manually at least once before trusting the badge
+
+jobs:
+  # A real local-first browser run against a real g2.com category.
+  #
+  # This job interprets the EXIT CODE rather than requiring 0 — from day
+  # one, because for THIS site a strict-exit-0 canary would be wrong on
+  # arrival, not eventually. g2.com is protected by DataDome (confirmed
+  # live — see g2_parser.py's module docstring), which has no automated
+  # solve path anywhere, and a CI runner's shared datacentre IP is close
+  # to the worst possible exit for getting past one. A canary that goes
+  # red every time the site's own defense fires teaches everyone to ignore
+  # the check — the exact failure mode CLAUDE.md §11 warns about for a
+  # different reason (a permanently-red claude.yml).
+  #
+  #   EXIT_CRASH (1) / EXIT_BAD_USAGE (2)  -> a real bug in THIS repo's own
+  #                                           code. Hard failure.
+  #   EXIT_BLOCKED (3) / EXIT_ZERO_PRODUCTS (4) / EXIT_REMOTE_API_ERROR (5)
+  #                                        -> the site's own defense, an
+  #                                           empty category, or a broken
+  #                                           remote dependency. ::notice::,
+  #                                           never a failure.
+  #   EXIT_OK (0) / EXIT_PARTIAL (6)       -> a real, trustworthy run; check
+  #                                           the plausibility floor below.
+  #
+  # ALSO NOTE, and do not "fix" this into a sibling repo's threshold:
+  # price_confirmed_pct is expected to be 0 (or null) here. g2.com carries
+  # NO price on a category card or a product page at all — pricing lives on
+  # a separate /pricing page behind --with-pricing, which this canary
+  # deliberately does not use (one extra request per product, against a
+  # best-effort text parser). Asserting a price floor the way lidl-scraper's
+  # or shein-scraper's canaries do would fail on a perfectly good run.
+  canary-local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install -r requirements-playwright.txt
+          playwright install --with-deps chromium
+
+      - name: Run the local-first default against a real category listing
+        run: |
+          set +e
+          python3 playwright_scraper.py \
+            --category crm --max-pages 1 --max-results 20 \
+            --format json --out canary_out.json --dump-html
+          echo "exit_code=$?" >> "$GITHUB_ENV"
+
+      - name: Interpret the exit code — only a crash/bad-usage is a real CI failure
+        run: |
+          python3 -c "
+          import json, os, sys
+
+          code = int(os.environ['exit_code'])
+          print(f'playwright_scraper.py exited {code}')
+
+          # EXIT_OK=0 / EXIT_PARTIAL=6: a real, trustworthy run.
+          if code in (0, 6):
+              meta = json.load(open('canary_out.json.meta.json'))
+              print(json.dumps(meta, indent=2))
+              assert meta['pages_completed'] >= 1, meta
+              # One confirmed listing page carried ~20 cards; the floor is
+              # set well under that so a layout tweak that trims the page
+              # doesn't turn this red on its own.
+              assert meta['product_count'] >= 10, meta
+              # No price assertion on purpose — see this job's header.
+              print(f\"canary: got {meta['product_count']} products in {meta['pages_completed']} page(s), status={meta['status']}\")
+
+          # EXIT_BLOCKED=3 / EXIT_ZERO_PRODUCTS=4 / EXIT_REMOTE_API_ERROR=5:
+          # finish_run() writes NO sidecar for any of these by design (a
+          # stale 'failed' sidecar must never sit beside a previous good
+          # output). On g2.com the overwhelmingly likely cause of a 3 is
+          # DataDome refusing this runner's datacentre IP — expected, not a
+          # regression, and nothing in this repo can solve it. Report it as
+          # a notice and let a human look at the uploaded debug HTML.
+          elif code in (3, 4, 5):
+              print(f'::notice::exit {code} — no sidecar written (blocked/empty/remote-api-error, '
+                    f'by finish_run design). On g2.com the usual cause is DataDome refusing this '
+                    f'runner IP, which has no automated solve path anywhere — inspect '
+                    f'canary_out_debug.html from this run\\'s uploaded artifact before assuming a '
+                    f'code regression.')
+
+          # EXIT_CRASH=1 / EXIT_BAD_USAGE=2: an unhandled exception or a
+          # usage bug in THIS repo's own code, independent of what the live
+          # site returned — this is a real failure.
+          elif code in (1, 2):
+              print(f'::error::exit {code} is a crash/bad-usage outcome — a real bug in this '
+                    f'repo\\'s own code, not a live-site surprise. See the previous step\\'s log.')
+              sys.exit(1)
+
+          else:
+              print(f'::error::unrecognised exit code {code}')
+              sys.exit(1)
+          "
+
+      - name: Upload artifacts (output + debug HTML) on every run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-local-${{ github.run_id }}
+          path: |
+            canary_out.json
+            canary_out.json.meta.json
+            canary_out_debug.html
+          retention-days: 14
+
+  # Opt-in, mirroring the rest of the family's pattern: exercises the
+  # --cdp-endpoint (2Captcha Scraping Browser API) path when a repo secret
+  # is configured. Skips cleanly — not red — when it isn't (CLAUDE.md §11:
+  # a canary behind an optional secret is always a SKIP, never a hard
+  # failure). This is also the single most useful observation this repo can
+  # make about g2.com that it has not made yet: whether the Scraping
+  # Browser API's own device identity and exit get past DataDome where a
+  # bare CI runner does not. Nothing here solves DataDome — the question is
+  # whether it fires at all.
+  canary-cdp:
+    runs-on: ubuntu-latest
+    env:
+      HAS_CDP: ${{ secrets.G2_CDP_ENDPOINT != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip — no G2_CDP_ENDPOINT secret configured
+        if: env.HAS_CDP != 'true'
+        run: |
+          echo "::notice::Skipping the Scraping Browser API run: no G2_CDP_ENDPOINT \
+          secret is set. This is optional — canary-local above already exercises this repo's \
+          local-first default with no secrets at all. Set G2_CDP_ENDPOINT (and TWOCAPTCHA_KEY) \
+          as repo secrets to also turn this job on. This is a SKIP, not a pass or a fail."
+
+      - uses: actions/setup-python@v5
+        if: env.HAS_CDP == 'true'
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-playwright.txt
+        if: env.HAS_CDP == 'true'
+
+      # Both secrets go through the ENVIRONMENT, never a command-line flag
+      # (CLAUDE.md §3: credentials never reach argv). env_config.py already
+      # reads G2_CDP_ENDPOINT/TWOCAPTCHA_KEY unconditionally, so this is
+      # correct with or without either secret set.
+      - name: Run over the Scraping Browser API
+        if: env.HAS_CDP == 'true'
+        env:
+          G2_CDP_ENDPOINT: ${{ secrets.G2_CDP_ENDPOINT }}
+          TWOCAPTCHA_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
+        run: |
+          set +e
+          python3 playwright_scraper.py \
+            --category crm --max-pages 1 --max-results 10 \
+            --format json --out canary_cdp_out.json --dump-html
+          echo "cdp_exit_code=$?" >> "$GITHUB_ENV"
+
+      - name: Interpret the exit code (same rules as canary-local)
+        if: env.HAS_CDP == 'true'
+        run: |
+          python3 -c "
+          import os, sys
+          code = int(os.environ['cdp_exit_code'])
+          print(f'playwright_scraper.py (--cdp-endpoint) exited {code}')
+          if code in (0, 6):
+              print('::notice::the Scraping Browser API session reached g2.com and returned products')
+          elif code in (3, 4, 5):
+              print(f'::notice::exit {code} — the managed session was blocked/empty/unreachable. For '
+                    f'g2.com this is the interesting data point, not a build break: it says the '
+                    f'Scraping Browser identity did NOT get past DataDome on this run.')
+          else:
+              print(f'::error::exit {code} is a crash/bad-usage outcome — a real bug in this repo.')
+              sys.exit(1)
+          "
+
+      - name: Upload artifacts on every non-skipped run
+        if: always() && env.HAS_CDP == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-cdp-${{ github.run_id }}
+          path: |
+            canary_cdp_out.json
+            canary_cdp_out.json.meta.json
+            canary_cdp_out_debug.html
+          retention-days: 14

@@ -241,12 +241,13 @@ __all__ = [
     "BOT_CHALLENGE_MARKERS", "GENERAL_DISALLOWED_PATTERNS",
     "AI_CRAWLER_EXTRA_DISALLOWED_PATTERNS", "is_disallowed_path",
     "is_known_scrape_target", "category_url", "product_url", "pricing_url",
-    "grids_json_url", "slug_from_product_url", "make_sku",
+    "grids_json_url", "slug_from_product_url", "category_slug_from_url",
+    "make_sku",
     "parse_category_listing", "safe_parse_category_listing",
     "count_result_cards", "has_next_page", "current_page_number",
     "extract_json_ld", "parse_product_page", "count_product_page_data",
     "parse_pricing_page", "count_pricing_tiers", "apply_pricing_tiers",
-    "diagnose_unexpected_page",
+    "diagnose_unexpected_page", "now_iso",
 ]
 
 BASE_URL = "https://www.g2.com"
@@ -413,12 +414,44 @@ def grids_json_url(category_slug: str) -> str:
 
 
 _PRODUCT_SLUG_RE = re.compile(r"/products/([^/?#]+)")
+# Anchored to the WHOLE path, with nothing allowed after the slug: a
+# `/categories/crm/grids.json` URL has a category slug in it but is a
+# different endpoint, not a listing page anything can be paginated from,
+# so it must NOT come back as "crm" here.
+_CATEGORY_SLUG_RE = re.compile(r"^/categories/([^/?#]+)/?$")
 
 
 def slug_from_product_url(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
     m = _PRODUCT_SLUG_RE.search(url)
+    return m.group(1) if m else None
+
+
+def category_slug_from_url(url: Optional[str]) -> Optional[str]:
+    """The `crm` out of `https://www.g2.com/categories/crm?page=3`.
+
+    Added for the engine scripts (stage 2): all three of them paginate by
+    rebuilding `category_url(slug, page)` for each page rather than
+    string-editing whatever `--url` the caller typed, and every one of them
+    needs the slug back out of a caller-supplied URL to do that. Knowing
+    that a category slug is the path segment after `/categories/` is
+    site knowledge, so it lives here rather than being re-derived with a
+    regex in each engine (this module's own docstring: if you find yourself
+    adding a g2.com URL shape to another module, it belongs here).
+    Returns None for a URL that isn't a category listing at all —
+    `grids.json` included, since that's a different endpoint, not a page
+    this can be paginated from."""
+    if not url:
+        return None
+    path = url
+    if path.startswith("http://") or path.startswith("https://"):
+        path = urlparse(path).path
+    else:
+        path = path.split("?", 1)[0].split("#", 1)[0]
+    if not path.startswith("/"):
+        path = "/" + path
+    m = _CATEGORY_SLUG_RE.match(path)
     return m.group(1) if m else None
 
 
@@ -1014,6 +1047,19 @@ def diagnose_unexpected_page(html: str) -> str:
         return f"diagnostic unavailable, page-bytes={len(html)}"
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
+    """The exact `scraped_at` stamp format every row in this repo carries.
+
+    Made public for the engine scripts (stage 2): a `--url .../pricing`
+    run builds its one row in the engine (there is no listing card and no
+    `SoftwareApplication` JSON-LD on that page to build it from), and it
+    must stamp that row the same way every parser-built row is stamped.
+    Three engines reaching into a private `_now_iso` — or each formatting
+    its own timestamp slightly differently — is how a column drifts."""
     import datetime
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Kept so the parser internals above read unchanged; `now_iso()` is the
+# name a caller outside this module should use.
+_now_iso = now_iso
