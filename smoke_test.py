@@ -197,6 +197,22 @@ DATADOME_WALL_HTML = (
     "</body></html>"
 )
 
+# DataDome's own interstitial SLIDER challenge — the vendor-documented
+# shape (https://2captcha.com/api-docs/datadome-slider-captcha), added
+# 2026-09-22. Unlike DATADOME_WALL_HTML above, this one has the iframe a
+# real challenge presents; entity-encoded `&amp;` in the query string
+# matches how a browser's `page.content()`/`driver.page_source` would
+# actually render the attribute.
+DATADOME_SLIDER_WALL_HTML = (
+    "<html><head><title>g2.com</title></head><body>"
+    '<script src="https://dd.g2.com/js/" type="text/javascript"></script>'
+    "<script>window.DataDomeJsTag = {};</script>"
+    '<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=abc123'
+    '&amp;hash=deadbeef&amp;cid=xyz789&amp;t=fe&amp;referer=https%3A%2F%2Fwww.g2.com%2Fcategories%2Fcrm"'
+    ' height="600" width="100%"></iframe>'
+    "</body></html>"
+)
+
 
 # --------------------------------------------------------------------------- #
 # Engine import/CLI hygiene (CLAUDE.md §6)
@@ -749,12 +765,17 @@ def _():
         assert marker in DATADOME_WALL_HTML.lower(), marker
 
 
-@check("a DataDome wall reports action='unsupported_vendor' + vendor='datadome' — NOT the vague 'detected_unidentified_widget' — because there is no widget or sitekey to extract, and no solve path to buy (restored from skyscanner-scraper, which hit this with PerimeterX)")
+@check("a DataDome wall with NO visible slider challenge reports action='unsupported_vendor' + vendor='datadome' — NOT the vague 'detected_unidentified_widget' — because DataDome's own device-check tag is present but there is currently nothing to solve on this page")
 def _():
+    # Corrected 2026-09-22 (Roman caught this): DataDome itself DOES have a
+    # real 2Captcha task type — CaptchaType.DATADOME_SLIDER, see the
+    # dedicated check below — so this fixture (DataDome's tag with no
+    # slider iframe, the ordinary case on most page loads) is no longer
+    # "DataDome can never be solved," it's "nothing to solve on THIS page."
     class _FakeClient:
         api_key = "fake"
 
-    assert captcha_solver.identify_widget(DATADOME_WALL_HTML) is None, "DataDome has no extractable widget"
+    assert captcha_solver.identify_widget(DATADOME_WALL_HTML) is None, "no iframe in this fixture -> no extractable widget"
     assert captcha_solver.identify_unsupported_vendor(DATADOME_WALL_HTML) == "datadome"
     result = captcha_solver.solve_when_blocked(
         client=_FakeClient(), page_url="https://www.g2.com/categories/crm",
@@ -763,9 +784,94 @@ def _():
     )
     assert result["action"] == "unsupported_vendor", result
     assert result["vendor"] == "datadome", result
-    # No CaptchaType member exists for it on purpose — one with no 2Captcha
-    # task type behind it would be a crash waiting for its first caller.
-    assert not any("datadome" in t.value for t in captcha_solver.CaptchaType)
+    # DATADOME_SLIDER DOES exist now (see the dedicated checks below) — the
+    # old assumption that no CaptchaType could ever name it was the bug.
+    assert any(t == captcha_solver.CaptchaType.DATADOME_SLIDER for t in captcha_solver.CaptchaType)
+
+
+@check("a DataDome page WITH a real slider iframe is identified as CaptchaType.DATADOME_SLIDER, with the iframe src carried through as captcha_url (HTML-entity-decoded)")
+def _():
+    signal = captcha_solver.identify_widget(DATADOME_SLIDER_WALL_HTML)
+    assert signal is not None, "must find the slider iframe"
+    assert signal.captcha_type == captcha_solver.CaptchaType.DATADOME_SLIDER
+    assert signal.captcha_url.startswith("https://geo.captcha-delivery.com/captcha/?"), signal.captcha_url
+    assert "&amp;" not in signal.captcha_url, "must be HTML-entity-decoded, not raw markup"
+    assert "&" in signal.captcha_url
+
+
+@check("solve_when_blocked() for a DataDome slider challenge with NO proxy supplied returns 'warning_no_proxy' — never a crash, never a silently-skipped solve — because DataDomeSliderTask has no proxyless variant")
+def _():
+    class _FakeClient:
+        api_key = "fake"
+        def solve_and_wait(self, task):  # pragma: no cover - must not be reached
+            raise AssertionError("must not call 2Captcha without a proxy for DataDomeSliderTask")
+
+    result = captcha_solver.solve_when_blocked(
+        client=_FakeClient(), page_url="https://www.g2.com/categories/crm",
+        html=DATADOME_SLIDER_WALL_HTML, count_product_links=gp.count_result_cards,
+        extra_markers=gp.BOT_CHALLENGE_MARKERS,
+        # proxy=None, user_agent=None — the point of this check
+    )
+    assert result["action"] == "warning_no_proxy", result
+    assert "proxy" in result["detail"].lower()
+
+
+@check("solve_when_blocked() for a DataDome slider challenge WITH proxy+user_agent builds a real DataDomeSliderTask (proxyType/proxyAddress/proxyPort/captchaUrl/userAgent) and reports action='solved'; parse_datadome_cookie() turns the cookie-shaped solution into a driver-ready dict")
+def _():
+    seen_tasks = []
+
+    class _FakeClient:
+        api_key = "fake"
+        def solve_and_wait(self, task):
+            seen_tasks.append(task)
+            return json.dumps({"cookie": "datadome=SOLVEDVALUE123; Path=/; Secure; SameSite=Lax"})
+
+    result = captcha_solver.solve_when_blocked(
+        client=_FakeClient(), page_url="https://www.g2.com/categories/crm",
+        html=DATADOME_SLIDER_WALL_HTML, count_product_links=gp.count_result_cards,
+        extra_markers=gp.BOT_CHALLENGE_MARKERS,
+        proxy={"type": "http", "address": "203.0.113.9", "port": 8000, "login": "u", "password": "p"},
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) fake-smoke-test-ua",
+    )
+    assert result["action"] == "solved", result
+    assert result["captcha_type"] == "datadome_slider"
+    assert len(seen_tasks) == 1
+    task = seen_tasks[0]
+    assert task["type"] == "DataDomeSliderTask"
+    assert task["proxyType"] == "http" and task["proxyAddress"] == "203.0.113.9" and task["proxyPort"] == 8000
+    assert task["proxyLogin"] == "u" and task["proxyPassword"] == "p"
+    assert task["captchaUrl"].startswith("https://geo.captcha-delivery.com/captcha/?")
+    assert task["userAgent"] == "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) fake-smoke-test-ua"
+
+    cookie = captcha_solver.parse_datadome_cookie(result["token"])
+    assert cookie == {
+        "name": "datadome", "value": "SOLVEDVALUE123",
+        "path": "/", "secure": True, "same_site": "Lax",
+    }, cookie
+
+
+@check("_task_payload() refuses a DataDome slider task with no user_agent even when a proxy IS supplied — the second required-input guard, not just the proxy one")
+def _():
+    signal = captcha_solver.identify_widget(DATADOME_SLIDER_WALL_HTML)
+    try:
+        captcha_solver._task_payload(
+            signal, "https://www.g2.com/categories/crm", proxyless=False,
+            proxy={"type": "http", "address": "203.0.113.9", "port": 8000},
+            user_agent=None,
+        )
+        raise AssertionError("must raise without user_agent")
+    except captcha_solver.TwoCaptchaError as exc:
+        assert "user_agent" in str(exc)
+
+
+@check("parse_datadome_cookie() raises TwoCaptchaError (never a bare exception) on a malformed solution — the same 'solver error is a warning' contract every other branch of this module honors")
+def _():
+    for bad in ("not json at all", json.dumps({"no_cookie_key": "x"}), json.dumps("a string, not a dict")):
+        try:
+            captcha_solver.parse_datadome_cookie(bad)
+            raise AssertionError(f"must raise for {bad!r}")
+        except captcha_solver.TwoCaptchaError:
+            pass
 
 
 @check("a HEALTHY g2.com listing page — which also carries DataDome's tag, because every g2.com page does — is NOT treated as blocked: solve_when_blocked sees the rendered cards and skips solving entirely")

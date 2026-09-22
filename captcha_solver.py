@@ -28,15 +28,51 @@ sitekey also happens to be present, into a wasted PAID solve. There is no
 safe default here: every call site passes its own.
 
 **DataDome (g2.com's own bot defense — `window.DataDomeJsTag`,
-`dd.g2.com/js/`, confirmed live) has no automated solve path at all.**
-`GENERIC_BOT_CHALLENGE_MARKERS` below already carries `"datadome"`, so
-DETECTION works out of the box; solving does not, and there is deliberately
-no `CaptchaType` member for it (see `identify_unsupported_vendor()` and
-`solve_when_blocked()`'s `"unsupported_vendor"` action, restored here from
-skyscanner-scraper, which hit the identical situation with PerimeterX).
-Naming a vendor that cannot be solved is an honest log line; a CaptchaType
-with no 2Captcha task type behind it would be a crash waiting for its first
-caller.
+`dd.g2.com/js/`, confirmed live) IS solvable — corrected 2026-09-22.**
+The original version of this module claimed "no automated solve path at
+all," treating DataDome the same as PerimeterX. That was wrong, caught by
+Roman (2Captcha's own team) pointing at
+https://2captcha.com/api-docs/datadome-slider-captcha: **2Captcha ships a
+dedicated `DataDomeSliderTask`** for exactly this vendor's own interstitial
+slider challenge. `CaptchaType.DATADOME_SLIDER` below maps to it. Two real
+constraints from that same page, both enforced in `_task_payload()` rather
+than documented-and-ignored (CLAUDE.md §17's standing lesson):
+
+  - **No proxyless variant exists.** `proxyType`/`proxyAddress`/
+    `proxyPort` are required fields, not optional ones — DataDome
+    validates the solved challenge against the IP that presents it
+    afterward, so `solve_when_blocked()`'s `proxy=` argument is mandatory
+    for this type specifically (every other type here defaults to
+    proxyless). Calling it for a DataDome challenge with no proxy returns
+    a `"warning_no_proxy"` action, not a crash and not a silent skip.
+  - **The solution is a `Set-Cookie`-shaped string** (`"datadome=...;
+    Path=/; Secure; SameSite=Lax"`), not a token for a hidden form field —
+    structurally closer to a session credential than to a Turnstile/
+    reCAPTCHA response. `build_injection_script()` below does not cover
+    it (writing a *Secure* cookie via `document.cookie` from JS is
+    unreliable/blocked depending on scheme); `parse_datadome_cookie()`
+    turns the raw string into a dict shaped for each driver's own NATIVE
+    cookie-setting API instead (Playwright `context.add_cookies`,
+    Selenium `driver.add_cookie`, pyppeteer `page.setCookie`) — the
+    engine still owns actually calling its own driver, same split as
+    everywhere else in this module.
+
+**This is still unconfirmed against a real, live g2.com capture** — no
+engine in this family has ever seen g2.com actually present a visible
+DataDome slider (only the always-on `window.DataDomeJsTag`/cookie, which
+is DataDome's silent device-check, not a challenge). The iframe `src`
+pattern `_DATADOME_IFRAME_RE` looks for
+(`geo.captcha-delivery.com/captcha/?...&t=fe...`) is 2Captcha's own
+documented shape for the vendor generally, not something captured from
+g2.com specifically — same "standard vendor convention, unconfirmed on
+this site" honesty posture as the GeeTest patterns below. A bare DataDome
+marker with NO such iframe present (the ordinary case, expected on most
+page loads) still has nothing to solve — `identify_unsupported_vendor()`
+and the `"unsupported_vendor"` action (restored from skyscanner-scraper,
+which hit the identical situation with PerimeterX, which genuinely has no
+2Captcha task type at all) still fire for THAT case, now meaning "DataDome
+is present but not currently challenging this request," not "DataDome can
+never be solved."
 
 No page-execution primitive (page.evaluate / execute_script) crosses this
 module's boundary: `build_injection_script()` below only BUILDS a plain
@@ -77,6 +113,7 @@ though it may be covered and simply wasn't seen in that one capture).
 """
 from __future__ import annotations
 
+import html as html_module  # module param name `html` shadows the stdlib module below
 import json
 import re
 from dataclasses import dataclass
@@ -104,6 +141,11 @@ class CaptchaType(str, Enum):
     HCAPTCHA = "hcaptcha"
     GEETEST_V3 = "geetest_v3"
     GEETEST_V4 = "geetest_v4"
+    # 2026-09-22: maps to 2Captcha's DataDomeSliderTask. See module
+    # docstring for why this is NOT the same shape as everything else
+    # above (mandatory proxy, cookie-shaped solution, unconfirmed-on-g2.com
+    # iframe pattern).
+    DATADOME_SLIDER = "datadome_slider"
 
 
 _SITEKEY_PATTERNS = {
@@ -175,6 +217,19 @@ _GEETEST_V3_RE = re.compile(
     re.S,
 )
 
+# DataDome's own interstitial slider — confirmed shape from 2Captcha's
+# published integration docs (https://2captcha.com/api-docs/datadome-
+# slider-captcha and their "how to bypass DataDome captcha" guide), NOT
+# from a captured g2.com page (see module docstring). The query string is
+# long and vendor-controlled (`initialCid`/`hash`/`cid`/`t`/`referer`
+# among others) so this only anchors on host+path and takes everything up
+# to the closing quote, rather than trying to name every param.
+_DATADOME_IFRAME_RE = re.compile(
+    r'<iframe\b[^>]*\bsrc=(["\'])'
+    r'(https://geo\.captcha-delivery\.com/captcha/\?[^"\']+)\1',
+    re.I,
+)
+
 
 @dataclass
 class CaptchaSignal:
@@ -187,6 +242,10 @@ class CaptchaSignal:
     challenge: Optional[str] = None
     captcha_id: Optional[str] = None
     api_server: Optional[str] = None
+    # DATADOME_SLIDER-only: the challenge iframe's own `src`, unescaped —
+    # 2Captcha's `captchaUrl` field, "the value of the src parameter for
+    # the iframe element" per their own docs. No other type uses this.
+    captcha_url: Optional[str] = None
 
 
 # The Scraping Browser API's managed Chromium ships 2Captcha's OWN
@@ -223,29 +282,36 @@ def detect_from_html(html: str, extra_markers: Sequence[str] = ()) -> bool:
     return False
 
 
-# Markers whose VENDOR is known, but for which 2Captcha has no automated
-# task type at all — "there is no solve path here, full stop", not "we
-# couldn't extract a sitekey". Restored VERBATIM from skyscanner-scraper's
-# captcha_solver.py (which added it 2026-09-20 after 2Captcha's own team
-# confirmed it for PerimeterX); shein-scraper's copy — the newest sibling
-# and this repo's porting source — had dropped it, which per CLAUDE.md §7
-# reads as a divergence rather than a decision, since nothing in
-# shein-scraper needed it.
+# Markers whose VENDOR is known, but for which `identify_widget()` found
+# no CURRENTLY-solvable challenge on THIS page. Restored VERBATIM from
+# skyscanner-scraper's captcha_solver.py (which added it 2026-09-20 after
+# 2Captcha's own team confirmed PerimeterX has no task type at all —
+# "there is no solve path here, full stop" for that vendor specifically);
+# shein-scraper's copy — the newest sibling and this repo's porting
+# source — had dropped it, which per CLAUDE.md §7 reads as a divergence
+# rather than a decision, since nothing in shein-scraper needed it.
 #
-# **This is THE mechanism that matters for g2.com.** DataDome is g2.com's
-# confirmed bot defense (`window.DataDomeJsTag`, `window.dataDomeOptions.
-# endpoint = "https://dd.g2.com/js/"`, v5.10.0, a `datadome` cookie — all
-# confirmed live), and no automated solve path for it is known. Without
-# this branch, a real DataDome wall reports the vague
+# `"datadome"` in this dict does NOT mean the same thing as
+# `"perimeterx"`/`"cloudflare_managed_challenge"` any more (corrected
+# 2026-09-22 — see module docstring). DataDome DOES have a real 2Captcha
+# task type (`CaptchaType.DATADOME_SLIDER`), already caught by
+# `identify_widget()` above when its slider iframe is present. This entry
+# is reached only for the OTHER case: DataDome's marker is present
+# (`window.DataDomeJsTag`, a `datadome` cookie — on every g2.com page,
+# confirmed live) but no `geo.captcha-delivery.com/captcha/` iframe was
+# found, i.e. DataDome is watching this request but not currently
+# challenging it. Without this branch that case reports the vague
 # `detected_unidentified_widget` ("we failed to parse it"); with it, the
-# run reports `unsupported_vendor` + `vendor="datadome"` ("this is
-# structurally unsolvable"). Both end in EXIT_BLOCKED — the difference is
-# whether the log tells the truth about why.
+# run reports `unsupported_vendor` + `vendor="datadome"` ("present, no
+# active challenge to solve here"). Neither wording should be read as "not
+# solvable at all" for DataDome any more — that claim was the bug Roman
+# caught.
 #
 # Checked ONLY after `identify_widget()` already returned None for a marker
 # that DID match `GENERIC_BOT_CHALLENGE_MARKERS`/`extra_markers` — a real
-# Turnstile / reCAPTCHA / hCaptcha / GeeTest widget is solvable and is
-# already caught by `identify_widget()` before this is ever consulted.
+# Turnstile / reCAPTCHA / hCaptcha / GeeTest / DataDome-slider widget is
+# solvable and is already caught by `identify_widget()` before this is
+# ever consulted.
 _UNSUPPORTED_VENDOR_MARKERS = {
     "perimeterx": ("px-captcha", "perimeterx"),
     "datadome": ("datadome",),
@@ -300,15 +366,67 @@ def identify_widget(html: str) -> Optional[CaptchaSignal]:
     m = _GEETEST_V3_RE.search(html)
     if m:
         return CaptchaSignal(CaptchaType.GEETEST_V3, sitekey=None, gt=m.group(1), challenge=m.group(2))
+    # DataDome slider — checked last, after every solvable-without-proxy
+    # type above, since it's the only type here that REQUIRES a proxy to
+    # solve at all (see module docstring); a caller with no proxy still
+    # gets an honest "unsupported_vendor"/"warning_no_proxy" outcome
+    # rather than a silently-skipped detection.
+    m = _DATADOME_IFRAME_RE.search(html)
+    if m:
+        return CaptchaSignal(
+            CaptchaType.DATADOME_SLIDER, sitekey=None,
+            captcha_url=html_module.unescape(m.group(2)),
+        )
     return None
 
 
-def _task_payload(signal: CaptchaSignal, page_url: str, *, proxyless: bool, min_score: float = 0.3) -> dict:
+def _task_payload(
+    signal: CaptchaSignal, page_url: str, *, proxyless: bool, min_score: float = 0.3,
+    proxy: Optional[dict] = None, user_agent: Optional[str] = None,
+) -> dict:
     # GeeTest's task shape has no `websiteKey` at all (v3 sends `gt`/
     # `challenge`, v4 sends `captchaId`) — confirmed against 2Captcha's own
     # published API reference for GeeTestTask(Proxyless)/GeeTestV4Task
     # (Proxyless), unlike identify_widget()'s extraction patterns above,
     # which are NOT confirmed against a real shein.com capture.
+    if signal.captcha_type == CaptchaType.DATADOME_SLIDER:
+        # No proxyless variant exists for this type (confirmed against
+        # 2Captcha's own published spec — see module docstring); `proxy`
+        # is required here regardless of the `proxyless` flag the caller
+        # passed for every OTHER type. Raising (not silently proceeding
+        # without a proxy) matches this module's existing "a solver-side
+        # error is a WARNING, never silently wrong" policy — the caller
+        # (solve_when_blocked) turns this specific message into its own
+        # named `"warning_no_proxy"` action rather than the generic
+        # `"warning_solver_error"` bucket, so a log/metrics consumer can
+        # tell "no key" / "no proxy" / "solver failed" apart.
+        if not proxy or not proxy.get("address") or not proxy.get("port"):
+            raise TwoCaptchaError(
+                "DataDomeSliderTask requires a proxy (type/address/port) — "
+                "DataDome validates the solved challenge against the IP that "
+                "presents it afterward, so there is no proxyless path for this "
+                "vendor; none was supplied to solve_when_blocked()"
+            )
+        if not user_agent:
+            raise TwoCaptchaError(
+                "DataDomeSliderTask requires user_agent — 2Captcha's own docs "
+                "say to send the SAME modern browser UA the challenge will be "
+                "presented back to; none was supplied to solve_when_blocked()"
+            )
+        task = {
+            "type": "DataDomeSliderTask",
+            "websiteURL": page_url,
+            "captchaUrl": signal.captcha_url,
+            "userAgent": user_agent,
+            "proxyType": proxy.get("type", "http"),
+            "proxyAddress": proxy["address"],
+            "proxyPort": proxy["port"],
+        }
+        if proxy.get("login"):
+            task["proxyLogin"] = proxy["login"]
+        if proxy.get("password"):
+            task["proxyPassword"] = proxy["password"]
+        return task
     if signal.captcha_type == CaptchaType.GEETEST_V4:
         return {
             "type": "GeeTestV4TaskProxyless" if proxyless else "GeeTestV4Task",
@@ -371,6 +489,8 @@ def solve_when_blocked(
     extra_markers: Sequence[str] = (),
     proxyless: bool = True,
     min_score: float = 0.3,
+    proxy: Optional[dict] = None,
+    user_agent: Optional[str] = None,
 ) -> dict:
     """The default `--solve-captcha when-blocked` policy. Cheap first: count
     product links on the page AS-IS — no readiness wait, no scroll — because
@@ -387,6 +507,15 @@ def solve_when_blocked(
     `count_pricing_tiers` (a `/pricing` page). This module deliberately
     has NO default for it: a keyword-only required argument is what makes
     a caller stop and pick.
+
+    `proxy` / `user_agent` matter for exactly one type today:
+    `CaptchaType.DATADOME_SLIDER` (see module docstring) has no proxyless
+    path at all, unlike every other type here. Every other type ignores
+    both. `proxy` is a plain dict: `{"type": "http"|"socks4"|"socks5",
+    "address": str, "port": int, "login": str|None, "password": str|None}`
+    — shaped to pass straight through from whatever `proxy_pool.py`
+    already handed the engine for its own browser launch, not a new
+    credential source.
     """
     if not detect_from_html(html, extra_markers):
         return {"action": "no_captcha_detected"}
@@ -402,12 +531,24 @@ def solve_when_blocked(
         return {"action": "detected_unidentified_widget"}
 
     try:
-        task = _task_payload(signal, page_url, proxyless=proxyless, min_score=min_score)
+        task = _task_payload(
+            signal, page_url, proxyless=proxyless, min_score=min_score,
+            proxy=proxy, user_agent=user_agent,
+        )
         token = client.solve_and_wait(task)
         return {"action": "solved", "captcha_type": signal.captcha_type.value, "token": token}
     except TwoCaptchaAuthError as exc:
         return {"action": "warning_no_key", "detail": str(exc)}
     except TwoCaptchaError as exc:
+        # DataDomeSliderTask's own two required-input checks above raise
+        # this same exception type (this module's policy is "solver error
+        # is a warning, never a crash," and a missing prerequisite is no
+        # exception) — split out by message prefix so a caller/metrics
+        # consumer can tell "we never even tried, we're missing a proxy"
+        # apart from "we tried 2Captcha and it failed," rather than both
+        # landing in one generic bucket.
+        if signal.captcha_type == CaptchaType.DATADOME_SLIDER and "requires a proxy" in str(exc):
+            return {"action": "warning_no_proxy", "detail": str(exc)}
         return {"action": "warning_solver_error", "detail": str(exc)}
 
 
@@ -506,3 +647,59 @@ def build_injection_script(captcha_type: CaptchaType, solution: str) -> Optional
 }})();"""
 
     return None
+
+
+def parse_datadome_cookie(solution: str) -> dict:
+    """`DATADOME_SLIDER`'s counterpart to `build_injection_script()` — but a
+    DIFFERENT shape of counterpart, because the solution itself is a
+    different shape (see module docstring): not a token for a hidden
+    field, a `Set-Cookie`-style string. `solution` is `result["token"]`
+    from `solve_when_blocked()`, which for this type is actually
+    `scraper_api_client.solve_and_wait()`'s GeeTest-shaped JSON-encoded-
+    dict fallback (2Captcha's `solution` here has a `cookie` key, not
+    `token`/`gRecaptchaResponse`, so that method's existing fallback
+    branch already carries it through correctly — no client change
+    needed, just this parser on the receiving end).
+
+    Returns a dict shaped for a driver's OWN native cookie-setting call
+    (Playwright `context.add_cookies([...])`, Selenium `driver.add_cookie
+    ({...})`, pyppeteer `page.setCookie({...})`) — `{"name", "value",
+    "path", "secure", "same_site"}`. Deliberately does NOT set `domain`:
+    that's the one field genuinely site-specific, so it's left to the
+    caller (the page's own host) rather than guessed here. Raises
+    TwoCaptchaError (never a bare exception) if `solution` isn't the
+    cookie shape this type is supposed to produce — a malformed solve
+    result is exactly the "solver-side error is a warning, never a crash"
+    case this module's policy already covers everywhere else.
+    """
+    try:
+        parsed = json.loads(solution)
+        raw_cookie = parsed["cookie"]
+    except (json.JSONDecodeError, TypeError, KeyError) as exc:
+        raise TwoCaptchaError(
+            f"DataDomeSliderTask solution did not carry a usable cookie: {solution!r}"
+        ) from exc
+
+    # A real Set-Cookie header value: "datadome=VALUE; Path=/; Secure; SameSite=Lax"
+    first, *attr_parts = raw_cookie.split(";")
+    if "=" not in first:
+        raise TwoCaptchaError(f"DataDomeSliderTask cookie had no name=value pair: {raw_cookie!r}")
+    name, value = first.strip().split("=", 1)
+    attrs: dict = {}
+    for part in attr_parts:
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            attrs[k.strip().lower()] = v.strip()
+        else:
+            attrs[part.lower()] = True
+
+    return {
+        "name": name.strip(),
+        "value": value.strip(),
+        "path": attrs.get("path", "/"),
+        "secure": bool(attrs.get("secure", True)),
+        "same_site": attrs.get("samesite", "Lax"),
+    }

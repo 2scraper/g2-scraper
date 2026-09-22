@@ -90,6 +90,27 @@ class Proxy:
             return None
         return {"username": self.login, "password": self.password or ""}
 
+    def to_2captcha_task_dict(self) -> dict:
+        """Shaped for `captcha_solver.solve_when_blocked(proxy=...)` /
+        `_task_payload()`'s DataDomeSliderTask branch (added 2026-09-22 —
+        see that module's docstring), which is the one 2Captcha task type
+        in this family that requires a proxy at all. Added here rather
+        than built inline three times (once per engine) so all three stay
+        byte-identical on this by construction, not by discipline — the
+        same reasoning `masked()`/`playwright_proxy_dict()` above already
+        follow for their own callers."""
+        # 2Captcha's documented proxyType values are exactly http/socks4/
+        # socks5 (no "https") — this family's own Proxy.scheme can be
+        # "https" (a scheme a --proxy value can legally specify for OUR
+        # connection to the proxy) or blank; normalise rather than send a
+        # value 2Captcha's own API will reject outright.
+        proxy_type = self.scheme if self.scheme in ("http", "socks4", "socks5") else "http"
+        d = {"type": proxy_type, "address": self.host, "port": self.port}
+        if self.login:
+            d["login"] = self.login
+            d["password"] = self.password or ""
+        return d
+
 
 def parse_proxy_line(line: str) -> Proxy:
     line = line.strip()
