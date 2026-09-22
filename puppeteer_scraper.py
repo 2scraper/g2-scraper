@@ -167,8 +167,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="g2.com's confirmed defense is DataDome. This flag governs whether 2Captcha's "
              "DataDomeSliderTask is attempted when a slider challenge is detected — REQUIRES "
              "--proxy/--proxy-file, since that task type has no proxyless path — and also arms "
-             "the Scraping Browser API's own auto-solve for any other widget type that might "
-             "appear. Without a proxy, a DataDome challenge is reported as blocked, not solved.",
+             "the Scraping Browser API's own auto-solve over --cdp-endpoint. NOTE: those two are "
+             "mutually exclusive, not additive — --cdp-endpoint nulls out any local proxy, so "
+             "DataDomeSliderTask never runs there; DataDome coverage under --cdp-endpoint depends "
+             "entirely on 2Captcha's own auto-solve, which is unconfirmed for DataDome specifically "
+             "(see captcha_solver.py). Without a proxy and without --cdp-endpoint, a DataDome "
+             "challenge is reported as blocked, not solved.",
     )
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile's user agent (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")

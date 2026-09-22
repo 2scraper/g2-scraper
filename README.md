@@ -63,6 +63,20 @@ access can do for this repo.
   2Captcha key also still buys proxies, fingerprints and the Scraping
   Browser API's own device identity, all of which affect whether you get
   challenged in the first place.
+- **`DataDomeSliderTask` and `--cdp-endpoint` do not combine.** The proxy
+  this task type requires and a `--cdp-endpoint` session are mutually
+  exclusive across this whole family (same rule as `--proxy` itself — a
+  CDP session already carries its own exit IP), so running with
+  `--cdp-endpoint` never attempts `DataDomeSliderTask`, regardless of
+  `--solve-captcha`. What DOES run over `--cdp-endpoint` is 2Captcha's own
+  Scraping Browser `Captcha.setAutoSolve`, armed with a wildcard
+  (`{"type": "*"}`) on every page load — but whether their backend
+  actually solves a DataDome slider through that mechanism has never been
+  confirmed. The one live confirmation this repo has (2026-09-14) covered
+  Turnstile, Amazon WAF, Yandex SmartCaptcha and Lemin; DataDome (like
+  GeeTest) simply wasn't part of that capture, so its status there is
+  unknown rather than "no." See `captcha_solver.py`'s module docstring and
+  `TESTING.md` step 7 for the full reasoning.
 - **The three parsers are not equally reliable, and the README is the
   wrong place to be vague about it.**
   - `parse_category_listing()` — **solid.** Reads the card's
@@ -275,7 +289,7 @@ never drift apart.
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--solve-captcha` | `when-blocked` | `off` / `when-blocked` / `always`. Attempts 2Captcha's `DataDomeSliderTask` when a slider challenge is detected (**requires `--proxy`/`--proxy-file`** — no proxyless path exists for this type) and arms the Scraping Browser API's own auto-solve for other widget types. Without a proxy configured, a DataDome challenge is still just detected/reported, not solved |
+| `--solve-captcha` | `when-blocked` | `off` / `when-blocked` / `always`. Attempts 2Captcha's `DataDomeSliderTask` when a slider challenge is detected (**requires `--proxy`/`--proxy-file`** — no proxyless path exists for this type), and separately arms the Scraping Browser API's own auto-solve over `--cdp-endpoint`. These two are mutually exclusive, not additive: `--cdp-endpoint` nulls out any local proxy, so `DataDomeSliderTask` never fires there — DataDome coverage under `--cdp-endpoint` depends entirely on 2Captcha's own auto-solve, which is confirmed (2026-09-14) for Turnstile/Amazon WAF/Yandex SmartCaptcha/Lemin but **unconfirmed either way for DataDome**. Without a proxy and without `--cdp-endpoint`, a DataDome challenge is just detected/reported, not solved |
 | `--twocaptcha-key` | — | (or `TWOCAPTCHA_KEY`) |
 | `--min-score` | `0.3` | 2Captcha's own `minScore` field on a reCAPTCHA v3 task |
 | `--captcha-api` | — | Override the 2Captcha REST base URL (testing only) |

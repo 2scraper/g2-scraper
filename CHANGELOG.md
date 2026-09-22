@@ -9,6 +9,27 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Clarified — 2026-09-22 (same day, after the DataDome fix below): `--cdp-endpoint` does not extend it
+
+Roman asked directly whether the new `DataDomeSliderTask` support also
+works "через cdp" (over `--cdp-endpoint`). It doesn't, and by design: the
+same family-wide rule that nulls out a local `--proxy`/`G2_PROXY` the
+moment `--cdp-endpoint` is set also nulls the proxy `DataDomeSliderTask`
+requires, so that REST-API path never even attempts a solve in that mode
+(it now returns `"warning_no_proxy"` cleanly rather than being silently
+unreachable). Two docs/comments had drifted into implying otherwise —
+`--solve-captcha`'s help text in `playwright_scraper.py`/
+`puppeteer_scraper.py` and README's flag table both said the Scraping
+Browser's own `Captcha.setAutoSolve` covers "other widget types," wording
+that reads as "DataDome is excluded," which was never actually confirmed.
+Corrected across `captcha_solver.py`'s module docstring, both CDP-capable
+engines' `--solve-captcha` help text, `README.md` (flag table + a new
+bullet under "Read this before trusting a run") and `TESTING.md` step 7:
+DataDome's status under 2Captcha's CDP-side auto-solve is **unconfirmed**,
+not excluded — the one live capture (2026-09-14) confirmed Turnstile,
+Amazon WAF, Yandex SmartCaptcha and Lemin; DataDome (like GeeTest) simply
+wasn't part of that run.
+
 ### Fixed — 2026-09-22 (same day, after initial repo below): DataDome is solvable
 
 This repo's first version claimed g2.com's DataDome bot protection "has no

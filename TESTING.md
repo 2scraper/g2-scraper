@@ -309,6 +309,23 @@ top is a contradiction, not better cover (same for a fingerprint over
 `--cdp-endpoint`, which `fingerprint_client.refuse_if_cdp` blocks
 outright). Comment out whichever you're not testing.
 
+**This same rule means `DataDomeSliderTask` (see step 5/README) never runs
+under `--cdp-endpoint`.** That task requires a proxy we hold the
+credentials for; with the local proxy nulled out, `_maybe_solve_captcha()`
+always calls it with `proxy=None`, which the code refuses outright
+(`"warning_no_proxy"`) rather than attempting a solve that would validate
+against the wrong exit IP. So a `--cdp-endpoint` run's ONLY path to
+solving DataDome is 2Captcha's own `Captcha.setAutoSolve`, armed with a
+wildcard on every page load. **Whether their Scraping Browser backend
+actually covers DataDome through that mechanism has never been confirmed
+by this project** — the one live check (2026-09-14) confirmed Turnstile,
+Amazon WAF, Yandex SmartCaptcha and Lemin; DataDome (like GeeTest) wasn't
+part of that capture. If you run this step and a DataDome wall shows up,
+the single most useful thing to record is whether it got solved anyway
+(watch the log for `[Scraping Browser API] captcha solved`/`solve
+failed`/`captcha detected` — see `_enable_scraping_browser_auto_solve`) —
+that would be the first real data point either way.
+
 ## 8. The browserless Scraper API (`--scraper-api`), for real
 
 ```bash

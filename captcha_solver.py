@@ -103,13 +103,35 @@ charter says does not belong here. None of this has been exercised against
 g2.com, whose only confirmed defense (DataDome) is in the
 `identify_unsupported_vendor()` bucket above, not the solvable one.
 
-Over `--cdp-endpoint`, none of this applies: 2Captcha's own
-`Captcha.setAutoSolve` CDP domain (see each engine's own
-`_enable_scraping_browser_auto_solve`) solves AND injects entirely inside
-their infrastructure, for whichever widget types their Scraping Browser
-extension recognizes (confirmed live, 2026-09-14: Turnstile, Amazon WAF,
-Yandex SmartCaptcha, Lemin — GeeTest was NOT in that confirmed list,
-though it may be covered and simply wasn't seen in that one capture).
+Over `--cdp-endpoint`, none of this applies, and not just as an
+alternative — **the `DataDomeSliderTask` path above cannot run at all in
+that mode.** All three engines null out `proxy_pool` the moment
+`--cdp-endpoint` is set (the same "a CDP session already carries its own
+exit IP, stacking a second one on top is a contradiction" rule that
+drops `--proxy`/`G2_PROXY`), so `_maybe_solve_captcha()` always receives
+`proxy=None` there, and this module's own guard above (no proxy -> raise,
+caught as `"warning_no_proxy"`) refuses to even attempt the task — by
+design, not as a bug: this REST-flow path is built around a proxy WE hold
+the credentials for, so we can apply the solved cookie back into a
+session using that same exit IP; under `--cdp-endpoint` the exit IP
+belongs to 2Captcha's own Scraping Browser, which this client never sees
+and has nothing to attach a locally-solved cookie to.
+
+So under `--cdp-endpoint`, DataDome coverage depends entirely on 2Captcha's
+own `Captcha.setAutoSolve` CDP domain (see each engine's own
+`_enable_scraping_browser_auto_solve`, armed with `options: [{"type":
+"*"}]` — a wildcard, not a fixed list chosen by this repo) solving AND
+injecting entirely inside their infrastructure, for whichever widget
+types their Scraping Browser extension recognizes. **Confirmed live,
+2026-09-14: Turnstile, Amazon WAF, Yandex SmartCaptcha, Lemin.** GeeTest
+was NOT in that confirmed list, though it may be covered and simply
+wasn't seen in that one capture — and the same is true of DataDome:
+it was not in that capture either (g2.com wasn't the site under test),
+so whether 2Captcha's Scraping Browser auto-solve handles a DataDome
+slider is genuinely unconfirmed here, not "no." Nothing in this codebase
+can settle that question — it's a fact about 2Captcha's own backend, not
+something observable from the client side without an actual `--cdp-endpoint`
+run against a live DataDome challenge.
 """
 from __future__ import annotations
 
