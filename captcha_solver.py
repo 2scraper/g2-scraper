@@ -57,22 +57,59 @@ than documented-and-ignored (CLAUDE.md §17's standing lesson):
     engine still owns actually calling its own driver, same split as
     everywhere else in this module.
 
-**This is still unconfirmed against a real, live g2.com capture** — no
-engine in this family has ever seen g2.com actually present a visible
-DataDome slider (only the always-on `window.DataDomeJsTag`/cookie, which
-is DataDome's silent device-check, not a challenge). The iframe `src`
-pattern `_DATADOME_IFRAME_RE` looks for
-(`geo.captcha-delivery.com/captcha/?...&t=fe...`) is 2Captcha's own
-documented shape for the vendor generally, not something captured from
-g2.com specifically — same "standard vendor convention, unconfirmed on
-this site" honesty posture as the GeeTest patterns below. A bare DataDome
-marker with NO such iframe present (the ordinary case, expected on most
-page loads) still has nothing to solve — `identify_unsupported_vendor()`
-and the `"unsupported_vendor"` action (restored from skyscanner-scraper,
-which hit the identical situation with PerimeterX, which genuinely has no
-2Captcha task type at all) still fire for THAT case, now meaning "DataDome
-is present but not currently challenging this request," not "DataDome can
-never be solved."
+**Confirmed against a real, live g2.com capture as of 2026-09-22** — Roman's
+first-ever real run (`--cdp-endpoint` + a real 2Captcha key, category page,
+`crm`) DID hit a visible DataDome challenge, not just the silent always-on
+`window.DataDomeJsTag`/cookie device-check. The scrubbed raw capture is at
+`tests/fixtures/g2_datadome_interstitial.html`. Two things that capture
+settled, and one it opened up:
+
+  - **Settled: the iframe `src` g2.com actually serves is
+    `geo.captcha-delivery.com/interstitial/?...`, not `.../captcha/?...`.**
+    `_DATADOME_IFRAME_RE` originally only matched `/captcha/` — 2Captcha's
+    own published integration-doc shape, never confirmed against this site
+    — so this exact real block was, until this capture, silently falling
+    into `identify_unsupported_vendor()`'s "present, nothing to solve"
+    bucket instead of being attempted. Fixed by matching both paths (see
+    the pattern's own comment); whether `DataDomeSliderTask` actually
+    solves an `/interstitial/`-shaped challenge the same way it solves a
+    `/captcha/`-shaped one is the next thing to confirm, not something this
+    capture alone settles.
+  - **Settled, narrowly: this specific capture's extension-injected
+    script list has no DataDome entry.** Every OTHER vendor the Scraping
+    Browser API's bundled extension covers (Turnstile, CaptchaFox,
+    MTCaptcha, Amazon WAF, Yandex, Lemin, Arkose Labs, reCAPTCHA,
+    KeyCaptcha, GeeTest v4/legacy) gets its own `interceptor.js`/
+    `hunter.js` pair injected into every page load, confirmed in this same
+    capture's `<head>`; DataDome has no such pair, on this page or (per the
+    extension's fixed, non-page-specific script list) any page. Consistent
+    with that: `Captcha.setAutoSolve` armed cleanly on this run (no
+    "unavailable" warning logged) but never fired `Captcha.detected` across
+    three retries against a real, present DataDome challenge — see each
+    engine's `_enable_scraping_browser_auto_solve`. One real capture is not
+    proof the Scraping Browser extension can never cover DataDome, but it
+    is the first actual evidence on the question the note below used to
+    call "genuinely unconfirmed," and it points at "not currently," not at
+    "untested either way."
+  - **Opened up, not settled: whether the proxy-mode `DataDomeSliderTask`
+    REST path (the one this module actually implements) can solve THIS
+    shape.** That run used `--cdp-endpoint`, which — per the "Over
+    `--cdp-endpoint`, none of this applies" section below — never reaches
+    this module's own solve path at all; G2_PROXY was present but ignored
+    (a `--cdp-endpoint` session's own exit always wins). Proving or
+    disproving DataDomeSliderTask against `/interstitial/` needs a run
+    WITHOUT `--cdp-endpoint`, so `G2_PROXY` + this module's own
+    `_task_payload()`/`solve_when_blocked()` call actually fire. Not done
+    as of this writing — costs real 2Captcha balance to attempt, so it's
+    a deliberate next run, not bundled into this fix.
+
+A bare DataDome marker with NO iframe present at all (the ordinary case,
+expected on most page loads — DataDome's silent device-check running and
+not challenging the request) still has nothing to solve —
+`identify_unsupported_vendor()` and the `"unsupported_vendor"` action
+(restored from skyscanner-scraper, which hit the identical situation with
+PerimeterX, which genuinely has no 2Captcha task type at all) still fire
+for THAT case.
 
 No page-execution primitive (page.evaluate / execute_script) crosses this
 module's boundary: `build_injection_script()` below only BUILDS a plain
@@ -125,13 +162,21 @@ injecting entirely inside their infrastructure, for whichever widget
 types their Scraping Browser extension recognizes. **Confirmed live,
 2026-09-14: Turnstile, Amazon WAF, Yandex SmartCaptcha, Lemin.** GeeTest
 was NOT in that confirmed list, though it may be covered and simply
-wasn't seen in that one capture — and the same is true of DataDome:
-it was not in that capture either (g2.com wasn't the site under test),
-so whether 2Captcha's Scraping Browser auto-solve handles a DataDome
-slider is genuinely unconfirmed here, not "no." Nothing in this codebase
-can settle that question — it's a fact about 2Captcha's own backend, not
-something observable from the client side without an actual `--cdp-endpoint`
-run against a live DataDome challenge.
+wasn't seen in that one capture.
+
+**DataDome specifically now has one real, live `--cdp-endpoint` data
+point (Roman, 2026-09-22, g2.com — see the module docstring's opening
+section for the full capture): `Captcha.setAutoSolve` armed without error
+and never fired `Captcha.detected` across three retries against a real,
+present DataDome interstitial, and that capture's own extension-injected
+script list has an `interceptor.js`/`hunter.js` pair for every OTHER
+vendor it covers but none for DataDome. Read together that's real
+evidence pointing at "not currently covered," not proof of it — one
+capture, one site, one challenge shape (`/interstitial/`), and 2Captcha's
+own backend could change this at any time without this repo knowing.
+Nothing client-side can fully settle the question; what changed today is
+that it is no longer untested, it is "one real attempt, no auto-solve
+observed."
 """
 from __future__ import annotations
 
@@ -239,16 +284,33 @@ _GEETEST_V3_RE = re.compile(
     re.S,
 )
 
-# DataDome's own interstitial slider — confirmed shape from 2Captcha's
-# published integration docs (https://2captcha.com/api-docs/datadome-
-# slider-captcha and their "how to bypass DataDome captcha" guide), NOT
-# from a captured g2.com page (see module docstring). The query string is
-# long and vendor-controlled (`initialCid`/`hash`/`cid`/`t`/`referer`
-# among others) so this only anchors on host+path and takes everything up
-# to the closing quote, rather than trying to name every param.
+# DataDome's own interstitial challenge — TWO confirmed shapes now, not
+# one. `/captcha/` is 2Captcha's own published integration-doc shape
+# (https://2captcha.com/api-docs/datadome-slider-captcha and their "how to
+# bypass DataDome captcha" guide); `/interstitial/` is what g2.com itself
+# was actually caught serving (Roman, 2026-09-22, first-ever real
+# `--cdp-endpoint` + real key run against live g2.com — raw capture
+# scrubbed of its single-use tokens at
+# tests/fixtures/g2_datadome_interstitial.html, title="DataDome Device
+# Check", `dd.rt` was `'i'` in that capture, presumably for "interstitial").
+# Before this, this module only recognized `/captcha/` and reported that
+# capture's very real block as `unsupported_vendor` — present, but
+# nothing this codebase knew how to solve. Both paths get the SAME
+# `CaptchaType.DATADOME_SLIDER` treatment below: 2Captcha's own
+# `DataDomeSliderTask` describes itself as covering DataDome's interstitial
+# challenge generally, not one specific URL path, and nothing else about
+# this module's DataDomeSliderTask handling (proxy-required, cookie-shaped
+# solution) is path-specific. Whether `DataDomeSliderTask` actually solves
+# an `/interstitial/`-shaped challenge the same way it solves a
+# `/captcha/`-shaped one is ITSELF still unconfirmed — this only gets the
+# attempt made instead of skipped; see the module docstring for what a
+# real attempt against this exact shape found. The query string is long
+# and vendor-controlled (`initialCid`/`hash`/`cid`/`t`/`referer` among
+# others) so this only anchors on host+path and takes everything up to the
+# closing quote, rather than trying to name every param.
 _DATADOME_IFRAME_RE = re.compile(
     r'<iframe\b[^>]*\bsrc=(["\'])'
-    r'(https://geo\.captcha-delivery\.com/captcha/\?[^"\']+)\1',
+    r'(https://geo\.captcha-delivery\.com/(?:captcha|interstitial)/\?[^"\']+)\1',
     re.I,
 )
 
@@ -320,9 +382,10 @@ def detect_from_html(html: str, extra_markers: Sequence[str] = ()) -> bool:
 # `identify_widget()` above when its slider iframe is present. This entry
 # is reached only for the OTHER case: DataDome's marker is present
 # (`window.DataDomeJsTag`, a `datadome` cookie — on every g2.com page,
-# confirmed live) but no `geo.captcha-delivery.com/captcha/` iframe was
-# found, i.e. DataDome is watching this request but not currently
-# challenging it. Without this branch that case reports the vague
+# confirmed live) but neither `geo.captcha-delivery.com/captcha/` NOR
+# `.../interstitial/` iframe was found, i.e. DataDome is watching this
+# request but not currently challenging it. Without this branch that case
+# reports the vague
 # `detected_unidentified_widget` ("we failed to parse it"); with it, the
 # run reports `unsupported_vendor` + `vendor="datadome"` ("present, no
 # active challenge to solve here"). Neither wording should be read as "not

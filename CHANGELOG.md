@@ -9,6 +9,46 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-22 (same day, latest): the first real live g2.com run, one real bug found, one real question answered
+
+Roman's own first live run — `--cdp-endpoint` (the Scraping Browser API)
+plus a real 2Captcha key, `--category crm`, `--solve-captcha when-blocked`
+— hit a genuine, visible DataDome challenge on g2.com for the first time
+in this repo's history. Two things came out of it:
+
+- **Bug: `captcha_solver.py`'s `_DATADOME_IFRAME_RE` only matched
+  `geo.captcha-delivery.com/captcha/?...`** — 2Captcha's own published
+  integration-doc shape, never confirmed against this site. g2.com's real
+  challenge iframe is `geo.captcha-delivery.com/interstitial/?...`
+  (`title="DataDome Device Check"`) — a different path the pattern never
+  matched, so this exact real block was silently falling into
+  `identify_unsupported_vendor()`'s "present, nothing to solve" bucket
+  instead of ever being attempted. Now matches both paths. The scrubbed
+  real capture (single-use tokens redacted, structure intact) is saved at
+  `tests/fixtures/g2_datadome_interstitial.html`, with its own
+  `smoke_test.py` coverage, and the Dockerfile now copies that one file in
+  (previously every fixture was inline; see the Dockerfile's own comment).
+- **Answered, not settled: whether 2Captcha's Scraping Browser extension
+  auto-solves DataDome under `--cdp-endpoint`.** `captcha_solver.py`'s
+  module docstring used to call this "genuinely unconfirmed." This run's
+  `Captcha.setAutoSolve` armed cleanly and never fired `Captcha.detected`
+  across three retries against the real challenge above, and that
+  capture's own extension-injected script list has a per-vendor
+  `interceptor.js`/`hunter.js` pair for every OTHER vendor it covers
+  (Turnstile, CaptchaFox, MTCaptcha, Amazon WAF, Yandex, Lemin, Arkose
+  Labs, reCAPTCHA, KeyCaptcha, GeeTest) but none for DataDome. One real
+  capture, one site — not proof it can never cover DataDome — but real
+  evidence pointing at "not currently," where before there was none.
+
+**Still open, on purpose:** whether this repo's own `DataDomeSliderTask`
+REST path (the one the bug fix above actually restores) can solve the
+`/interstitial/` shape the way it's documented to solve `/captcha/`. That
+run used `--cdp-endpoint`, which never reaches this module's solve path at
+all (`G2_PROXY` gets ignored the moment a CDP session is present — its own
+exit always wins). Settling this needs a run WITHOUT `--cdp-endpoint`, and
+costs real 2Captcha balance to attempt, so it's a deliberate next run, not
+bundled into this fix.
+
 ### Fixed — 2026-09-22 (same day, after the two entries below): first real end-to-end test run, two real bugs found and fixed
 
 This repo had never once been driven by a real browser end-to-end before

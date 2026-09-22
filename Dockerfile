@@ -7,10 +7,13 @@
 # (CLAUDE.md §11 — nothing else builds it, which is how earlier family
 # members shipped a broken one). It was written before the engine scripts
 # and smoke_test.py existed, then reconciled against them once they
-# landed: this repo's smoke_test.py builds every fixture inline, so there
-# is no `tests/` directory to copy, and it never reads sample_output.*, so
-# those are documentation rather than a build input and stay out of the
-# published image entirely.
+# landed: this repo's smoke_test.py builds almost every fixture inline —
+# the one exception is tests/fixtures/g2_datadome_interstitial.html
+# (added 2026-09-22, a real scrubbed g2.com capture — see
+# captcha_solver.py's module docstring), which is why that one file now
+# gets its own COPY line below rather than a whole tests/ directory. It
+# never reads sample_output.*, so that stays documentation rather than a
+# build input and stays out of the published image entirely.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -35,10 +38,13 @@ COPY env_config.py proxy_pool.py output_writer.py captcha_solver.py \
      selenium_scraper.py smoke_test.py ./
 # smoke_test.py reads this one straight off disk (the ENV_KEYS <->
 # .env.example sync check, CLAUDE.md §17) — leaving it out crashes the
-# build the same way a missing .py module above would. It is the ONLY
-# non-.py build input: every HTML/JSON fixture in this repo's smoke_test.py
-# is built inline, so there is no fixtures directory to copy.
+# build the same way a missing .py module above would.
 COPY .env.example ./
+# The one real (scrubbed) HTML capture smoke_test.py reads off disk rather
+# than building inline — leaving this out crashes the build with a
+# FileNotFoundError the moment RUN python3 smoke_test.py reaches its
+# check, same failure class as the two omissions above.
+COPY tests/fixtures/g2_datadome_interstitial.html tests/fixtures/
 
 RUN python3 smoke_test.py
 

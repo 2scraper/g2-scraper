@@ -43,27 +43,48 @@ every exit code the architecture defines. This is real, meaningful
 progress — it is proof the PIPELINE moves data correctly through a real
 browser, which offline `smoke_test.py` alone could never show.
 
-**What still has NOT happened: a single run of THIS repo's own engine
-scripts against the REAL g2.com.** Not a failed one — none has been
-attempted successfully, because the environment this repo was built AND
-live-tested in blocks the network egress an engine run against the real
-site needs. A plain `curl https://www.g2.com/` returns HTTP 403 from the
-egress proxy on every attempt, confirmed again 2026-09-22 from two separate
-sandboxes. That is an environment/network-policy gap, not a bug in the
-scraper, and the fix is running the commands below from a machine that
-isn't behind that policy.
+**What HAS also now happened, 2026-09-22 (same day, later): the first real
+run of THIS repo's own engine scripts against the REAL g2.com — from a
+machine outside this build/test environment's own blocked egress.** Roman,
+`playwright_scraper.py --category crm --solve-captcha when-blocked
+--dump-html`, a real `--cdp-endpoint` (Scraping Browser API) session and a
+real 2Captcha key. Result: a genuine HTTP 403, a real DataDome interstitial
+(`geo.captcha-delivery.com/interstitial/?...`, `title="DataDome Device
+Check"` — scrubbed capture at `tests/fixtures/g2_datadome_interstitial.html`),
+zero products, exit `3` after 3 retries on the same session. Not a
+successful scrape — but real, and it earned its keep: it's what surfaced
+`_DATADOME_IFRAME_RE` only ever matching `/captcha/`, never the
+`/interstitial/` shape g2.com actually serves (fixed the same day — see
+CHANGELOG.md), and it's the first real data point on whether 2Captcha's
+Scraping Browser auto-solve covers DataDome (`Captcha.setAutoSolve` armed,
+never fired `Captcha.detected` across three tries — see
+`captcha_solver.py`'s module docstring for the full reasoning, including
+why that's evidence and not proof).
+
+**What still has NOT happened: a successful scrape against real g2.com, and
+specifically a run of the REST `DataDomeSliderTask` path (`G2_PROXY`, no
+`--cdp-endpoint`) against a real DataDome challenge.** The run above used
+`--cdp-endpoint`, which never reaches this module's own solve path at all —
+`G2_PROXY` gets ignored the moment a CDP session is present. Proving or
+disproving whether this repo's own captcha-solving code (not 2Captcha's
+Scraping Browser extension) can get through the `/interstitial/` shape
+needs a proxy-mode run, and costs real 2Captcha balance to attempt — a
+deliberate next step, not something to run casually.
 
 Everything `smoke_test.py` and `local_e2e_test.py` prove, they prove
 against fixtures built from those captures — real shapes, a real browser, a
-real pipeline, but not a real request to g2.com itself. **Closing that
-specific gap is this repo's single highest-value remaining check.** Until
-it is closed, treat "the parser reads this shape correctly, and the whole
-engine pipeline actually works" as established, and "g2.com's real markup
-still matches that shape today" as the one thing still untested.
+real pipeline, and now one real (blocked) request to g2.com itself.
+**Closing the remaining gap — a proxy-mode solve attempt, and ultimately a
+successful real scrape — is this repo's single highest-value remaining
+check.** Until then, treat "the parser reads this shape correctly, the
+whole engine pipeline actually works, and a real run against g2.com is
+detected and reported honestly" as established, and "this repo's own
+DataDomeSliderTask solve actually gets through g2.com's real challenge" as
+the one thing still untested.
 
 ## What `smoke_test.py` actually covers
 
-83 checks, all offline, all passing with **no** engine driver installed
+85 checks, all offline, all passing with **no** engine driver installed
 (`python3 smoke_test.py`). What they are, by category — these are the real
 groupings in the file, not a generic template:
 

@@ -213,6 +213,24 @@ DATADOME_SLIDER_WALL_HTML = (
     "</body></html>"
 )
 
+# The OTHER confirmed DataDome shape — `/interstitial/`, not `/captcha/` —
+# added 2026-09-22 after Roman's first real `--cdp-endpoint` + real-key run
+# against live g2.com actually hit it (see captcha_solver.py's module
+# docstring for the full story). Synthetic, mirroring
+# DATADOME_SLIDER_WALL_HTML's own style; the real scrubbed capture this is
+# modeled on lives at tests/fixtures/g2_datadome_interstitial.html and gets
+# its own check below.
+DATADOME_INTERSTITIAL_WALL_HTML = (
+    "<html><head><title>g2.com</title></head><body>"
+    '<script src="https://dd.g2.com/js/" type="text/javascript"></script>'
+    "<script>window.DataDomeJsTag = {};</script>"
+    '<iframe src="https://geo.captcha-delivery.com/interstitial/?initialCid=abc123'
+    '&amp;hash=deadbeef&amp;cid=xyz789&amp;referer=https%3A%2F%2Fwww.g2.com%2Fcategories%2Fcrm'
+    '&amp;s=48726&amp;e=deadbeef&amp;b=1648239&amp;dm=cd"'
+    ' title="DataDome Device Check" height="600" width="100%"></iframe>'
+    "</body></html>"
+)
+
 
 # --------------------------------------------------------------------------- #
 # Engine import/CLI hygiene (CLAUDE.md §6)
@@ -797,6 +815,50 @@ def _():
     assert signal.captcha_url.startswith("https://geo.captcha-delivery.com/captcha/?"), signal.captcha_url
     assert "&amp;" not in signal.captcha_url, "must be HTML-entity-decoded, not raw markup"
     assert "&" in signal.captcha_url
+
+
+@check("a DataDome page with the OTHER confirmed shape — /interstitial/, not /captcha/ — is ALSO identified as CaptchaType.DATADOME_SLIDER (added 2026-09-22 after this exact shape was missed on a real g2.com run and silently reported unsupported_vendor instead of attempted)")
+def _():
+    signal = captcha_solver.identify_widget(DATADOME_INTERSTITIAL_WALL_HTML)
+    assert signal is not None, "must find the /interstitial/ iframe too, not just /captcha/"
+    assert signal.captcha_type == captcha_solver.CaptchaType.DATADOME_SLIDER
+    assert signal.captcha_url.startswith("https://geo.captcha-delivery.com/interstitial/?"), signal.captcha_url
+    assert "&amp;" not in signal.captcha_url
+    # The real regression this guards against: solve_when_blocked() checks
+    # identify_widget() FIRST and only falls back to
+    # identify_unsupported_vendor() when that returns None (see this
+    # module's own comment above _UNSUPPORTED_VENDOR_MARKERS) — so what
+    # actually matters is solve_when_blocked()'s own routing, not whether
+    # identify_unsupported_vendor() (a standalone marker search that still
+    # matches "datadome" regardless) would also match this page.
+    result = captcha_solver.solve_when_blocked(
+        client=None, page_url="https://www.g2.com/categories/crm",
+        html=DATADOME_INTERSTITIAL_WALL_HTML, count_product_links=gp.count_result_cards,
+        extra_markers=gp.BOT_CHALLENGE_MARKERS,
+        # proxy=None, client=None — same as the existing "NO proxy" check
+        # above: DATADOME_SLIDER's proxy-required guard in _task_payload()
+        # raises before `client` is ever touched, so this still proves the
+        # routing without needing a real/fake client.
+    )
+    assert result["action"] == "warning_no_proxy", (
+        "must route through the DATADOME_SLIDER solve path (which then "
+        f"complains about the missing proxy), not 'unsupported_vendor': {result}"
+    )
+
+
+@check("the REAL scrubbed g2.com capture (tests/fixtures/g2_datadome_interstitial.html — Roman's first live --cdp-endpoint run, 2026-09-22) is identified as CaptchaType.DATADOME_SLIDER, not reported as unsupported_vendor")
+def _():
+    fixture_path = Path(__file__).parent / "tests" / "fixtures" / "g2_datadome_interstitial.html"
+    real_html = fixture_path.read_text(encoding="utf-8")
+    assert "geo.captcha-delivery.com/interstitial/" in real_html, "fixture must still contain the real iframe shape"
+    assert 'title="DataDome Device Check"' in real_html
+    signal = captcha_solver.identify_widget(real_html)
+    assert signal is not None, "the real capture must be recognized as a solvable DataDome challenge"
+    assert signal.captcha_type == captcha_solver.CaptchaType.DATADOME_SLIDER
+    assert signal.captcha_url.startswith("https://geo.captcha-delivery.com/interstitial/?"), signal.captcha_url
+    # Confirms the scrub didn't accidentally leave a real single-use token behind.
+    for leaked_prefix in ("AHrlqAAAAAMAzHjDxiNG", "229542D5C186C7F5A5BB", "pg9Z1U1y5BqoS3mpc38t"):
+        assert leaked_prefix not in real_html, f"scrubbed fixture still contains a real token: {leaked_prefix}"
 
 
 @check("solve_when_blocked() for a DataDome slider challenge with NO proxy supplied returns 'warning_no_proxy' — never a crash, never a silently-skipped solve — because DataDomeSliderTask has no proxyless variant")
