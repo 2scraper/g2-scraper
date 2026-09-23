@@ -229,7 +229,11 @@ What it actually proves, per engine: a healthy multi-page category run
 merges correctly; `--url ".../categories/crm?page=2"` truly resumes at
 page 2 (the regression test for the pagination bug this run found); a
 product page fills `rating_10` and leaves `rating_5` empty; a DataDome wall
-with no proxy/key reports `EXIT_BLOCKED` and writes no file. Playwright
+with no proxy/key reports `EXIT_BLOCKED` and writes no file; a `--proxy-file`
+list with a genuinely dead first proxy (added 2026-09-23, the regression
+test for the proxy-rotation bug a real 10-proxy run found — see
+CHANGELOG.md) still completes with `EXIT_OK` by rotating to the next live
+proxy, rather than aborting the whole run as `remote_api_error`. Playwright
 additionally gets the full `DataDomeSliderTask` round trip: task payload
 sent to the stand-in 2Captcha server (proxy fields and a real
 `navigator.userAgent`, both asserted present), solved cookie applied via
@@ -238,7 +242,15 @@ on the retry.
 
 **What this does NOT prove**: that g2.com's real markup still matches
 these CONFIRMED-as-of-2026-09-22 shapes. Only the numbered checklist below,
-against the real site, can tell you that.
+against the real site, can tell you that. **Also note:** Selenium's own
+run of this suite depends on chromedriver and Chrome/Chromium being
+version-matched on your machine — a mismatch (confirmed in this repo's own
+build/test environment: chromedriver 147 vs. Chromium 141) makes every
+Selenium check here fail with `SessionNotCreatedException`, including ones
+that have nothing to do with whatever you just changed. That's a local
+environment problem, not a sign the Selenium engine code itself is broken
+— `smoke_test.py`'s structural checks cover Selenium's code even when this
+suite can't run it live.
 
 If your sandbox's pyppeteer can't auto-download its bundled Chromium (a
 network-egress-policy problem, same flavor as the g2.com block below, not

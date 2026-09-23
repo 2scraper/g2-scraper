@@ -9,6 +9,70 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-23: a real 10-proxy `--proxy-file` run stopped after one navigation failure, never rotating past it
+
+Roman's next live test tried a whole list of 10 fresh proxies:
+`--proxy-file proxies.txt --block-retries 9` (with `G2_PROXY` unset, no
+`--cdp-endpoint`). The run got through 6 of the 10 (two
+`cloudflare_managed_challenge` blocks, two of the already-known `t=bv`
+banned-IP 2Captcha rejections from yesterday's fix) and then stopped dead
+on attempt 6's proxy — a plain `Page.goto: Timeout 30000ms exceeded`, not
+even a `net::ERR_*` code — never trying proxies 7 through 10 at all.
+
+- **Bug: `scrape_category()`'s first-page-navigation-failure branch, in
+  all three engines, unconditionally set `remote_api_error=True` and
+  broke out of the run.** `run()`'s `block_attempt` retry loop treats
+  `remote_api_error` as fatal (same as a crash — it breaks immediately),
+  so the entire point of handing it a 10-proxy list was defeated the
+  moment ANY single one of those proxies failed to load page 1, whether
+  that proxy was genuinely dead or just slow. Fixed: when a `proxy_pool`
+  with other entries is active, this now sets `blocked=True` instead,
+  which the same retry loop already treats as "try again" — and trying
+  again calls `proxy_pool.next()`, landing on the next proxy in the list.
+  The old behaviour — a hard `remote_api_error` — is kept for the one
+  case where it's still correct: no proxy pool at all (a direct
+  connection, or a `--cdp-endpoint` session, which brings its own fixed
+  exit IP and has nothing to rotate to).
+- **Related parity gap, found while tracing the bug above and fixed the
+  same day:** `selenium_scraper.py` and `puppeteer_scraper.py`'s
+  `_goto_with_retries()` have always detected a hard dead-proxy signature
+  (`proxy_pool.is_proxy_dead_error()` against Chromium's own
+  `PROXY_DEAD_MARKERS`) and reported it via `proxy_pool.report_failure(
+  proxy, dead=True)` — excluding a proxy that's flatly unreachable from
+  rotation immediately, rather than waiting on `--block-retries`.
+  `playwright_scraper.py` — this family's PRIMARY engine (CLAUDE.md
+  §14) — never had this at all; its `_goto_with_retries()` took no
+  `proxy_pool`/`proxy` parameters whatsoever. Brought to parity.
+- **New regression coverage, not just a structural check this time:**
+  `local_e2e_test.py` now spins up a `--proxy-file` with a genuinely dead
+  first proxy (an unbound local port — Chromium reports
+  `net::ERR_PROXY_CONNECTION_FAILED` near-instantly) and a live second
+  proxy, and asserts the run still completes (`EXIT_OK`) rather than
+  aborting as `remote_api_error` — confirmed to fail against the
+  pre-fix code (exit 5) and pass against the fix, for playwright and
+  puppeteer live in a real browser. `smoke_test.py` gained the
+  structural counterpart for all three engines (this repo's usual "an
+  engine needs a real browser to exercise behaviourally offline" split).
+  Selenium's own copy of the new e2e check could not be run live in this
+  particular build environment — an unrelated chromedriver/Chromium
+  version mismatch (chromedriver 147 vs. this environment's Chromium
+  141) fails EVERY selenium e2e check here, including the pre-existing
+  ones, not just the new one — but its code is byte-identical to
+  puppeteer's already-confirmed fix and is covered by the offline
+  structural check (`smoke_test.py`, 90/90).
+- **Not yet resolved, flagged honestly rather than silently left out:**
+  the same `remote_api_error=True`-on-first-failure pattern exists,
+  unfixed, in each engine's `scrape_product_page()` /
+  `scrape_pricing_page()` (single-page fetches, not the paginated
+  category loop this fix covers) — a `--product`/`--url .../reviews` run
+  with a `--proxy-file` would hit the identical bug. Out of scope for
+  this fix (Roman's real run was `--category`), tracked as a known
+  follow-up.
+- Also observed, not itself a bug: 2 of the 6 attempts in Roman's run hit
+  `cloudflare_managed_challenge`, a DIFFERENT block shape than DataDome
+  with no 2Captcha task type mapped to it in this family at all — by
+  design unsolvable here, not a gap in this fix.
+
 ### Fixed — 2026-09-22 (same day, latest of three): a second real live run, a real 2Captcha rejection surfaced two silent gaps
 
 Roman's follow-up run — same command, but with `--cdp-endpoint` commented

@@ -93,7 +93,9 @@ from captcha_solver import (
 )
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run, merge_pages, sku_key as _sku_key
-from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies, redact_credentials
+from proxy_pool import (
+    Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials,
+)
 from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptchaError
 
 ENGINE_NAME = "playwright"
@@ -512,10 +514,23 @@ async def _connect_over_cdp(pw, cdp_endpoint: str):
         raise RuntimeError(f"CDP connection failed: {redact_credentials(str(exc))}") from None
 
 
-async def _goto_with_retries(page: Page, url: str, *, retries: int, retry_delay: float) -> Tuple[Optional[int], Optional[str]]:
+async def _goto_with_retries(page: Page, url: str, *, retries: int, retry_delay: float,
+                              proxy_pool: Optional[ProxyPool] = None, proxy: Optional[Proxy] = None,
+                              ) -> Tuple[Optional[int], Optional[str]]:
     """Returns `(http_status, last_error)`. `last_error is not None` means
     every attempt failed — the caller treats that as a remote/navigation
-    failure for THAT page, never a crash (CLAUDE.md §6)."""
+    failure for THAT page, never a crash (CLAUDE.md §6).
+
+    Parity fix 2026-09-23: `selenium_scraper.py`/`puppeteer_scraper.py`'s
+    versions of this function have always been proxy-pool aware — they
+    call `is_proxy_dead_error()` on a failed attempt and
+    `proxy_pool.report_failure(proxy, dead=True)` when it matches one of
+    `PROXY_DEAD_MARKERS`, so a proxy that Chromium itself reports as
+    unreachable gets excluded from rotation immediately rather than
+    waiting on `--block-retries`. This engine's version was missing that
+    entirely (no `proxy_pool`/`proxy` params at all) — a real CLAUDE.md §4
+    parity gap, found while investigating why a `--proxy-file` run wasn't
+    rotating cleanly."""
     last_error: Optional[str] = None
     status: Optional[int] = None
     for attempt in range(retries + 1):
@@ -523,11 +538,19 @@ async def _goto_with_retries(page: Page, url: str, *, retries: int, retry_delay:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             await page.wait_for_timeout(READINESS_WAIT_MS)
             status = response.status if response is not None else None
+            if proxy_pool is not None and proxy is not None:
+                proxy_pool.report_success(proxy)
             last_error = None
             break
         except Exception as exc:  # noqa: BLE001 — every remote call must be bounded and reported
-            last_error = redact_credentials(str(exc))
-            log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, retries + 1, url, last_error)
+            message = redact_credentials(str(exc))
+            last_error = message
+            dead = is_proxy_dead_error(message)
+            if proxy_pool is not None and proxy is not None and dead:
+                proxy_pool.report_failure(proxy, dead=True)
+                log.warning("Proxy reported dead: %s", message)
+            else:
+                log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, retries + 1, url, message)
             if attempt < retries:
                 await asyncio.sleep(retry_delay)
     return status, last_error
@@ -574,16 +597,38 @@ async def scrape_category(
     for page_num in range(start_page, start_page + args.max_pages):
         page_url = gp.category_url(slug, page_num) if slug else start_url
         status, last_error = await _goto_with_retries(
-            page, page_url, retries=args.retries, retry_delay=args.retry_delay
+            page, page_url, retries=args.retries, retry_delay=args.retry_delay,
+            proxy_pool=proxy_pool, proxy=proxy,
         )
         if last_error is not None:
             log.error("Listing page %d permanently failed to load: %s", page_num, last_error)
             failed_pages.append(page_num)
             if page_num == start_page:
-                # Nothing was ever collected and the very first request
-                # never completed — that's a remote/transport failure for
-                # the whole run (EXIT_REMOTE_API_ERROR), not an empty
-                # category and not a crash.
+                if proxy_pool is not None and proxy is not None:
+                    # Bug fixed 2026-09-23: this used to be an unconditional
+                    # remote_api_error, which run()'s block_attempt loop
+                    # treats as fatal (breaks immediately, same as a crash)
+                    # — that defeated --proxy-file rotation entirely the
+                    # moment ANY one proxy in the list failed to load the
+                    # very first page (confirmed live: a run with 10 fresh
+                    # proxies and --block-retries 9 stopped after a single
+                    # navigation timeout on attempt 6, never trying 7-10).
+                    # A different proxy/exit may well succeed where this
+                    # one didn't, so treat it like a block instead — that
+                    # lets the caller's --block-retries loop rotate to
+                    # proxy_pool.next() rather than aborting the whole run.
+                    # _goto_with_retries() already reported a hard dead-proxy
+                    # marker (if this was one) via report_failure(dead=True);
+                    # a generic timeout isn't one of those and stays in
+                    # rotation for a later attempt.
+                    blocked = True
+                    break
+                # No alternative identity exists (no proxy pool, or a
+                # --cdp-endpoint session providing its own exit) — nothing
+                # was ever collected and the very first request never
+                # completed: that's a remote/transport failure for the
+                # whole run (EXIT_REMOTE_API_ERROR), not an empty category
+                # and not a crash.
                 remote_api_error = True
                 break
             continue

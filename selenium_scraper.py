@@ -540,6 +540,33 @@ def scrape_category(
                 log.error("Listing page %d permanently failed to load: %s", page_num, last_error)
                 failed_pages.append(page_num)
                 if page_num == start_page:
+                    if proxy_pool is not None and proxy is not None:
+                        # Bug fixed 2026-09-23: this used to be an
+                        # unconditional remote_api_error, which run()'s
+                        # block_attempt loop treats as fatal (breaks
+                        # immediately) — that defeated --proxy-file
+                        # rotation entirely the moment ANY one proxy in the
+                        # list failed to load the very first page
+                        # (confirmed live: a 10-proxy run with
+                        # --block-retries 9 stopped after a single
+                        # navigation timeout on attempt 6). A different
+                        # proxy/exit may well succeed where this one
+                        # didn't, so treat it like a block instead — the
+                        # caller's --block-retries loop then rotates to
+                        # proxy_pool.next() rather than aborting the whole
+                        # run. _goto_with_retries() already reported a
+                        # hard dead-proxy marker (if this was one) via
+                        # report_failure(dead=True); a generic timeout
+                        # isn't one of those and stays in rotation for a
+                        # later attempt.
+                        blocked = True
+                        break
+                    # No alternative identity exists (no proxy pool, or a
+                    # --cdp-endpoint session providing its own exit) —
+                    # nothing was ever collected and the very first
+                    # request never completed: that's a remote/transport
+                    # failure for the whole run (EXIT_REMOTE_API_ERROR),
+                    # not an empty category and not a crash.
                     remote_api_error = True
                     break
                 continue

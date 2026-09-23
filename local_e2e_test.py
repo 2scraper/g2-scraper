@@ -339,6 +339,39 @@ def main():
                 assert code == 3, f"expected exit 3, got {code}, stderr tail: {stderr[-800:]}"
                 assert not Path(out).exists(), "a blocked run must not write output"
 
+        @check(
+            f"{engine}: BUG fixed 2026-09-23 — a --proxy-file rotation survives the FIRST proxy "
+            f"having a totally dead navigation (connection refused), landing on a later live proxy "
+            f"instead of the whole run aborting as remote_api_error. Confirmed live 2026-09-22: a "
+            f"real 10-proxy run stopped after one navigation failure on proxy #1, never trying the "
+            f"other 9 (see CHANGELOG.md)."
+        )
+        def _(engine=engine):
+            import socket as _socket
+            # A port nothing is listening on — Chromium reports this as a
+            # proxy connection failure almost instantly (no NAV_TIMEOUT_MS
+            # wait), so this test stays fast.
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.bind(("127.0.0.1", 0))
+            dead_port = _s.getsockname()[1]
+            _s.close()
+            with tempfile.TemporaryDirectory() as d:
+                proxies_path = Path(d) / "proxies.txt"
+                proxies_path.write_text(
+                    f"http://127.0.0.1:{dead_port}\nhttp://127.0.0.1:{proxy_port}\n", encoding="utf-8"
+                )
+                out = str(Path(d) / "out.json")
+                code, stdout, stderr = _run(engine, [
+                    "--category", "crm", "--max-pages", "1", "--out", out, "--headless",
+                    "--proxy-file", str(proxies_path), "--block-retries", "3",
+                ], chromium_path=args.chromium_path)
+                assert code == 0, (
+                    f"expected exit 0 (rotated to the second, live proxy), got {code} — "
+                    f"remote_api_error(5) here means the fix regressed; stderr tail: {stderr[-1200:]}"
+                )
+                products = json.loads(Path(out).read_text())
+                assert len(products) == 3, f"expected the 1-page category's 3 products, got {products}"
+
         if engine == "playwright":
             @check(f"{engine}: full DataDomeSliderTask solve round trip (cookie applied, page reloaded, healthy content served)")
             def _(engine=engine):

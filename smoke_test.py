@@ -443,6 +443,60 @@ def _():
         )
 
 
+@check(
+    "BUG found live-testing 2026-09-23, now fixed: all three engines' scrape_category() used to set "
+    "remote_api_error=True unconditionally the moment the FIRST page's navigation failed, which "
+    "run()'s block_attempt loop treats as fatal (breaks immediately, same as a crash) — that defeated "
+    "--proxy-file rotation entirely the instant any single proxy timed out on page 1. Confirmed live: "
+    "a real run with 10 fresh proxies and --block-retries 9 stopped after ONE navigation timeout on "
+    "attempt 6, never trying proxies 7-10. Fix: when a proxy_pool is active, treat this as `blocked "
+    "= True` instead so the caller rotates to proxy_pool.next(); only fall back to the fatal "
+    "remote_api_error when there is no alternative identity to rotate to (no proxy pool, or a "
+    "--cdp-endpoint session providing its own fixed exit)."
+)
+def _():
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert "if proxy_pool is not None and proxy is not None:" in src and "blocked = True" in src, (
+            f"{path}: scrape_category()'s first-page-navigation-failure branch must check for a live "
+            f"proxy_pool and set blocked=True (letting --block-retries rotate) rather than always "
+            f"declaring remote_api_error"
+        )
+        # The two branches must both still exist, in this order: rotate-if-
+        # possible, THEN fall back to the fatal remote_api_error only when
+        # there's truly no alternative exit to try.
+        rotate_idx = src.find("if proxy_pool is not None and proxy is not None:\n")
+        fatal_idx = src.find("remote_api_error = True", rotate_idx)
+        assert rotate_idx != -1 and fatal_idx != -1 and fatal_idx > rotate_idx, (
+            f"{path}: expected the proxy-pool rotation check to come BEFORE the fatal "
+            f"remote_api_error fallback in scrape_category()"
+        )
+
+
+@check(
+    "parity fix 2026-09-23 (CLAUDE.md §4/§6): playwright_scraper.py's _goto_with_retries() now "
+    "accepts proxy_pool=/proxy= and detects a dead-proxy marker via is_proxy_dead_error(), matching "
+    "the capability selenium_scraper.py and puppeteer_scraper.py already had (a real, previously "
+    "undiscovered engine-parity gap — playwright is the PRIMARY engine per CLAUDE.md §14 and had the "
+    "weakest proxy-failure detection of the three)"
+)
+def _():
+    src = (ROOT / "playwright_scraper.py").read_text(encoding="utf-8")
+    assert "is_proxy_dead_error" in src, (
+        "playwright_scraper.py: _goto_with_retries() still can't recognise a dead-proxy marker"
+    )
+    assert "proxy_pool: Optional[ProxyPool] = None, proxy: Optional[Proxy] = None," in src, (
+        "playwright_scraper.py: _goto_with_retries() is missing the proxy_pool=/proxy= parameters "
+        "selenium/puppeteer's versions already have"
+    )
+    for mod in ENGINE_MODULES:
+        sig = _inspect.signature(mod._goto_with_retries)
+        assert "proxy_pool" in sig.parameters and "proxy" in sig.parameters, (
+            f"{mod.__name__}: _goto_with_retries() must accept proxy_pool=/proxy= — engine parity "
+            f"(CLAUDE.md §4)"
+        )
+
+
 @check("all three engines log a diagnostic (not silence) when a page yields zero products but was not flagged as blocked — a parity gap a sibling repo's first live run exposed")
 def _():
     for path in ENGINE_FILES:
