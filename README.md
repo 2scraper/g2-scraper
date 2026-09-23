@@ -471,7 +471,7 @@ wait buys is slack for DataDome's own asynchronous checks, not for content.
 ## Development
 
 ```bash
-python3 smoke_test.py      # 88 checks, no engine driver required
+python3 smoke_test.py      # 90 checks, no engine driver required
 python3 env_config.py      # shows what .env / the environment applied, never a secret
 python3 diff_runs.py a.json b.json   # added / removed / changed / source_changed between two completed runs
 ```

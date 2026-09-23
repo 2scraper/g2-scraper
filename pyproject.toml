@@ -41,4 +41,5 @@ py-modules = [
     "selenium_scraper",
     "puppeteer_scraper",
     "smoke_test",
+    "local_e2e_test",
 ]

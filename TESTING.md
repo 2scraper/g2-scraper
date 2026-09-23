@@ -107,7 +107,7 @@ the one thing still untested.
 
 ## What `smoke_test.py` actually covers
 
-88 checks, all offline, all passing with **no** engine driver installed
+90 checks, all offline, all passing with **no** engine driver installed
 (`python3 smoke_test.py`). What they are, by category — these are the real
 groupings in the file, not a generic template:
 

@@ -35,3 +35,10 @@ node_modules/
 .env
 *.key
 secrets*
+# --proxy-file input (README's own example names it proxies.txt) — a real
+# credential file a user creates locally, same class of thing as .env.
+# Found missing here 2026-09-23 during a pre-push audit, after this exact
+# name was the one suggested to a real user for a real proxy list.
+proxies.txt
+proxies*.txt
+*proxy-list*.txt
