@@ -9,6 +9,17 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-27
+
+First tagged release of g2-scraper, the g2.com member of the
+[2scraper](https://github.com/2scraper) family — three engines
+(Playwright primary, Selenium and Puppeteer for parity), one output
+contract, DataDome recognized and (with a proxy) solvable via 2Captcha's
+`DataDomeSliderTask`, local-first by default. Everything below this line,
+across every dated entry, is what shipped in this first tag; see
+`README.md`'s "What has and hasn't been verified" for the honest split
+between what's been confirmed live and what's architecture-tested only.
+
 ### Fixed — 2026-09-23: pre-publication audit hardening
 
 - Listing parser exceptions now carry an explicit failed-page state through
@@ -371,3 +382,6 @@ pointing at 2Captcha's published `DataDomeSliderTask`
   `User-agent: *` group could not be re-fetched to transcribe it, and
   guessing paths would be worse than leaving it visibly unfilled.
   `is_known_scrape_target()` is the conservative guard in the meantime.
+
+[Unreleased]: https://github.com/2scraper/g2-scraper/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/2scraper/g2-scraper/releases/tag/v0.1.0
