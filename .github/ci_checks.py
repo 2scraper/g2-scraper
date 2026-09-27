@@ -52,12 +52,29 @@ def _words(token: str) -> set[str]:
 _PLACEHOLDER_WORD_SET = {w for phrase in PLACEHOLDER_WORDS for w in _words(phrase)}
 
 
+# Directories that are never this repo's own source, however they got onto
+# disk — a virtualenv (any of them: CI's engine-smoke job makes one PER
+# engine, .venv-playwright/.venv-selenium/.venv-puppeteer, not just
+# `.venv`) or a node_modules tree carries a huge amount of third-party
+# test/fixture/license text that legitimately contains credential-shaped
+# strings (an SPDX license list, a URL-parsing test's own sample
+# credentialed URLs). `.gitignore` is supposed to keep these out of
+# `git ls-files --others --exclude-standard` already, but relying on that
+# alone is exactly the "two independent checks for the same thing WILL
+# drift apart" trap CLAUDE.md §17 warns about for placeholder detection —
+# a renamed/added venv directory silently reopens this the same way
+# `.venv-<engine>` did the first time. Filtering by name here too means a
+# stale or incomplete .gitignore degrades to redundant, not broken.
+_NOT_SOURCE_DIR = re.compile(r"(^|/)(\.venv[^/]*|venv|env|node_modules|__pycache__|\.git)(/|$)")
+
+
 def repository_files() -> list[str]:
     result = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=ROOT, check=True, capture_output=True,
     )
-    return [p.decode("utf-8", "surrogateescape") for p in result.stdout.split(b"\0") if p]
+    paths = [p.decode("utf-8", "surrogateescape") for p in result.stdout.split(b"\0") if p]
+    return [p for p in paths if not _NOT_SOURCE_DIR.search(p)]
 
 
 def is_placeholder(user: str, password: str) -> bool:

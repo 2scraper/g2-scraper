@@ -17,7 +17,17 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.venv/
+# CI's engine-smoke job creates one venv PER engine right inside the
+# checkout (.venv-playwright, .venv-selenium, .venv-puppeteer — see
+# tests.yml, CLAUDE.md §16), not a single .venv. A bare `.venv/` pattern
+# doesn't match those suffixed names, so `git ls-files --others
+# --exclude-standard` (.github/ci_checks.py's file list) was walking
+# straight into each one's installed packages and scanning THEIR test
+# fixtures and license data for credential shapes — found the hard way
+# when a real CI run flagged pip's vendored SPDX license list and
+# selenium's own websocket test fixtures as "possible committed
+# credentials". `.venv*/` covers every one of them, plus plain `.venv/`.
+.venv*/
 venv/
 env/
 
