@@ -309,6 +309,10 @@ def main():
                 assert code == 0, f"exit {code}, stderr tail: {stderr[-800:]}"
                 products = json.loads(Path(out).read_text())
                 assert len(products) == 5, f"expected 5 products, got {len(products)}"
+                assert "probing the reconstructed next URL" in stderr, (
+                    "the engine stopped on the disabled Next selector instead of probing "
+                    "the data-terminated next page"
+                )
 
         @check(f"{engine}: --url with ?page=2 actually starts at page 2 (regression for the bug fixed 2026-09-22)")
         def _(engine=engine):
@@ -371,6 +375,39 @@ def main():
                 )
                 products = json.loads(Path(out).read_text())
                 assert len(products) == 3, f"expected the 1-page category's 3 products, got {products}"
+
+        @check(
+            f"{engine}: --proxy-file rotation also survives a dead first proxy for standalone "
+            f"product and pricing URLs, not only category mode"
+        )
+        def _(engine=engine):
+            import socket as _socket
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.bind(("127.0.0.1", 0))
+            dead_port = _s.getsockname()[1]
+            _s.close()
+            with tempfile.TemporaryDirectory() as d:
+                proxies_path = Path(d) / "proxies.txt"
+                proxies_path.write_text(
+                    f"http://127.0.0.1:{dead_port}\nhttp://127.0.0.1:{proxy_port}\n",
+                    encoding="utf-8",
+                )
+                cases = (
+                    (f"http://127.0.0.1:{g2_port}/products/hubspot-sales-hub/reviews", "product.json"),
+                    (f"http://127.0.0.1:{g2_port}/products/hubspot-sales-hub/pricing", "pricing.json"),
+                )
+                for url, filename in cases:
+                    out = str(Path(d) / filename)
+                    code, stdout, stderr = _run(engine, [
+                        "--url", url, "--out", out, "--headless",
+                        "--proxy-file", str(proxies_path), "--block-retries", "3",
+                    ], chromium_path=args.chromium_path)
+                    assert code == 0, (
+                        f"{url}: expected rotation to the live proxy, got exit {code}; "
+                        f"stderr tail: {stderr[-1200:]}"
+                    )
+                    rows = json.loads(Path(out).read_text())
+                    assert len(rows) == 1, f"{url}: expected one output row, got {rows}"
 
         if engine == "playwright":
             @check(f"{engine}: full DataDomeSliderTask solve round trip (cookie applied, page reloaded, healthy content served)")

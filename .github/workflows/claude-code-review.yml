@@ -38,10 +38,10 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           path_to_claude_code_executable: ${{ env.CLAUDE_CODE_PATH }}
           prompt: |
-            Review this PR against CLAUDE.md's invariants (the ones in
-            ~/2scraper/CLAUDE.md if this checkout carries a copy, section 8
-            in particular) — do not re-litigate them, explain instead of
-            complying if a change seems to conflict with one. Flag banned
-            wording (section 12), output-contract drift (section 9), and
-            anything that touches pagination or captcha handling without
-            the corresponding smoke_test.py coverage.
+            Review this PR against the repository's documented contracts in
+            README.md, TESTING.md, CONTRIBUTING.md, and output_writer.py.
+            Pay special attention to preventing empty output from replacing
+            valid data, keeping blocked/partial/empty/error states distinct,
+            credential leakage, data-driven pagination, and captcha handling.
+            Flag pagination or captcha changes that lack matching coverage in
+            smoke_test.py or local_e2e_test.py.

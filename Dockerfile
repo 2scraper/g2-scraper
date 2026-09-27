@@ -53,7 +53,7 @@ RUN python3 smoke_test.py
 # was never COPYed here in the first place; this is the "no test suite"
 # half of that same rule). Strip it from the final layer rather than
 # leaving it in a published image.
-RUN rm -rf smoke_test.py __pycache__
+RUN rm -rf smoke_test.py tests __pycache__
 
 ENTRYPOINT ["python3", "playwright_scraper.py"]
 CMD ["--help"]

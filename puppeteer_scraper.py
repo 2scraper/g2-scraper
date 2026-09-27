@@ -151,12 +151,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--retry-delay", type=_nonnegative_float, default=3.0)
     p.add_argument(
         "--block-retries", type=_nonnegative_int, default=2,
-        help="On a blocked, zero-product outcome, retry this many extra times before giving up — "
-             "'retry before you rotate', not a proxy/session swap. Each retry here re-launches/"
-             "re-connects via _launch(), including a fresh connect() to the same --cdp-endpoint "
-             "ws:// URL; whether that reuses the SAME managed session or gets a new one depends on "
-             "the provider's own lease semantics, unconfirmed either way. On g2.com the thing "
-             "being retried is a DataDome decision, for which no solve exists at all.",
+        help="On a blocked, zero-product outcome, retry the whole scrape this many extra times. "
+             "With --proxy-file each attempt advances to the next live proxy and launches a fresh "
+             "browser; a fixed CDP endpoint keeps the provider's configured identity.",
     )
     p.add_argument("--proxy", default=None)
     p.add_argument("--proxy-file", default=None)
@@ -426,7 +423,8 @@ async def _maybe_solve_captcha(
             "%s marker present, no currently-solvable challenge found on this page — reporting "
             "this run as blocked. If this vendor is 'datadome' and a slider challenge was expected, "
             "confirm --proxy/--proxy-file is set (DataDomeSliderTask has no proxyless path); "
-            "otherwise your levers are --block-retries (retry the same session), a different "
+            "otherwise --block-retries retries the scrape (and advances a --proxy-file pool), "
+            "or use a different "
             "--proxy exit, or a --cdp-endpoint session with its own device identity.",
             result.get("vendor"),
         )
@@ -497,6 +495,8 @@ async def scrape_category(
         browser = await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint)
     except RuntimeError as exc:
         log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
+        if proxy_pool is not None and proxy is not None and not args.cdp_endpoint:
+            return [], True, False, 0, [1]
         return [], False, True, 0, []
     page = await browser.newPage()
     if user_agent:
@@ -556,6 +556,9 @@ async def scrape_category(
             continue
         last_html = html
 
+        if status == 404 and page_num > start_page:
+            log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
+            break
         if status is not None and status >= 400:
             log.warning("Listing page %d returned HTTP %d — treating as blocked, not empty.", page_num, status)
             blocked = True
@@ -586,7 +589,15 @@ async def scrape_category(
                 if gp.count_result_cards(html) == 0:
                     blocked = True
 
-        products = gp.safe_parse_category_listing(html, category_slug=slug, page_url=page_url)
+        parse_result = gp.parse_category_listing_safely(
+            html, category_slug=slug, page_url=page_url,
+        )
+        if parse_result.failed:
+            if page_num not in failed_pages:
+                failed_pages.append(page_num)
+            log.error("Listing page %d could not be parsed; continuing with the next reconstructed page URL.", page_num)
+            continue
+        products = parse_result.products
         if not products:
             if page_num == start_page and not blocked:
                 log.warning(
@@ -598,7 +609,8 @@ async def scrape_category(
                 )
             else:
                 log.info("Listing page %d yielded zero cards — treating that as the end of the category.", page_num)
-            pages_completed += 1
+            if page_num == start_page:
+                pages_completed += 1
             break
 
         pages_completed += 1
@@ -616,8 +628,10 @@ async def scrape_category(
         if page_num >= start_page + args.max_pages - 1:
             break
         if not gp.has_next_page(html):
-            log.info("Page %d's own pagination advertises no Next page — stopping.", page_num)
-            break
+            log.info(
+                "Page %d's pagination advertises no Next page; probing the reconstructed next URL "
+                "and stopping only when it yields no new product data.", page_num,
+            )
         await asyncio.sleep(args.page_delay)
 
     merged = merge_pages(pages)[: args.max_results]
@@ -653,6 +667,8 @@ async def scrape_product_page(
         browser = await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint)
     except RuntimeError as exc:
         log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
+        if proxy_pool is not None and proxy is not None and not args.cdp_endpoint:
+            return [], True, False, 0, [1]
         return [], False, True, 0, []
     page = await browser.newPage()
     if user_agent:
@@ -668,7 +684,9 @@ async def scrape_product_page(
     if last_error is not None:
         await browser.close()
         log.error("Product page permanently failed to load: %s", last_error)
-        return [], False, True, 0, []
+        if proxy_pool is not None and proxy is not None:
+            return [], True, False, 0, [1]
+        return [], False, True, 0, [1]
 
     if status is not None and status >= 400:
         log.warning("Product page returned HTTP %d — treating as blocked, not empty.", status)
@@ -814,6 +832,8 @@ async def scrape_pricing_only(
         browser = await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint)
     except RuntimeError as exc:
         log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
+        if proxy_pool is not None and proxy is not None and not args.cdp_endpoint:
+            return [], True, False, 0, [1]
         return [], False, True, 0, []
     page = await browser.newPage()
     if user_agent:
@@ -832,13 +852,16 @@ async def scrape_pricing_only(
     await browser.close()
 
     products = _pricing_only_product(start_url, tiers)
+    if remote_api_error and proxy_pool is not None and proxy is not None:
+        blocked, remote_api_error = True, False
     if not products and not blocked and not remote_api_error:
         log.warning(
             "Pricing page returned no recognisable tier lines — g2.com ships no pricing JSON-LD, "
             "so this parser is best-effort text matching and an empty result means 'no pricing "
             "could be read', never 'this product is free' (see g2_parser.py)."
         )
-    return products, blocked, remote_api_error, 0 if remote_api_error else 1, []
+    failed_pages = [1] if (blocked or remote_api_error) and not products else []
+    return products, blocked, remote_api_error, 0 if failed_pages else 1, failed_pages
 
 
 def _pricing_only_product(start_url: str, tiers) -> List[Product]:
@@ -913,7 +936,10 @@ def _scrape_via_scraper_api(
         return products, blocked, False, 1, []
 
     slug = gp.category_slug_from_url(start_url) or args.category
-    products = gp.safe_parse_category_listing(html, category_slug=slug, page_url=start_url)
+    parse_result = gp.parse_category_listing_safely(html, category_slug=slug, page_url=start_url)
+    if parse_result.failed:
+        return [], blocked, False, 0, [gp.page_number_from_url(start_url) or 1]
+    products = parse_result.products
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS) and gp.count_result_cards(html) < MIN_CARD_MATCHES:
         blocked = True
     if not products and not blocked:
@@ -1025,8 +1051,8 @@ async def run(args: argparse.Namespace) -> int:
             scrape_fn = scrape_pricing_only
         else:
             scrape_fn = scrape_category
-        # "Retry before you rotate" — see playwright_scraper.py's copy of
-        # this comment and --block-retries' help text.
+        # A proxy pool advances once per attempt; a fixed CDP endpoint keeps
+        # the provider's configured identity.
         for block_attempt in range(args.block_retries + 1):
             merged, blocked, remote_api_error, pages_completed, failed_pages = await scrape_fn(
                 args=args, start_url=start_url, proxy_pool=proxy_pool, client=client,
@@ -1036,7 +1062,7 @@ async def run(args: argparse.Namespace) -> int:
                 break
             if block_attempt < args.block_retries:
                 log.warning(
-                    "Blocked with zero products (attempt %d/%d) — retrying before giving up.",
+                    "Blocked with zero products (attempt %d/%d) — retrying; a proxy pool advances to its next live exit.",
                     block_attempt + 1, args.block_retries + 1,
                 )
                 await asyncio.sleep(args.retry_delay)

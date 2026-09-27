@@ -49,12 +49,10 @@ Example:
     python3 playwright_scraper.py --product hubspot-sales-hub --with-pricing
     python3 playwright_scraper.py --url "https://www.g2.com/categories/crm?page=2"
 
-Pagination is `?page=N`, discovered rather than assumed: this loop stops
-on whichever comes first — `--max-pages`, `--max-results`, a page that
-advertises no Next control (`g2_parser.has_next_page`), a page that yields
-zero cards at all, or a page that adds no NEW sku (the authoritative
-backstop `has_next_page`'s own docstring recommends). Page counts differ
-per category (111 for `crm` at capture time) and are never hardcoded.
+Pagination is `?page=N`. The loop reconstructs the next URL and stops on
+`--max-pages`, `--max-results`, zero cards, or no NEW sku. G2's Next control
+is logged as a diagnostic hint but is never the sole stop condition, so a
+selector change cannot silently truncate a successful run.
 
 **`grids.json` enrichment is deliberately NOT wired up here.**
 `g2_parser.grids_json_url()` builds the URL for G2's own sanctioned
@@ -179,13 +177,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--retry-delay", type=_nonnegative_float, default=3.0)
     p.add_argument(
         "--block-retries", type=_nonnegative_int, default=2,
-        help="On a blocked, zero-product outcome, retry on the SAME browser/CDP session (same exit "
-             "IP, same device identity) this many extra times before giving up — 'retry before you "
-             "rotate', not a proxy/session swap. A fresh --proxy/--cdp-endpoint identity is a "
-             "separate, manual decision between runs. Worth knowing for THIS site specifically: "
-             "g2.com's DataDome CAN be solved via --solve-captcha (2Captcha's DataDomeSliderTask), "
-             "but only with --proxy/--proxy-file set — without one, retrying on the same session "
-             "is one of the only other levers this repo has once a wall appears.",
+        help="On a blocked, zero-product outcome, retry the whole scrape this many extra times. "
+             "With --proxy-file each attempt advances to the next live proxy and creates a fresh "
+             "context; direct/CDP runs reuse their fixed exit identity.",
     )
     p.add_argument("--proxy", default=None, help="A single proxy, e.g. http://login:pass@host:port (or set G2_PROXY)")
     p.add_argument("--proxy-file", default=None, help="One proxy per line, same formats as --proxy")
@@ -402,8 +396,9 @@ async def _maybe_solve_captcha(
         # g2.com — see captcha_solver.py's module docstring): 2Captcha
         # itself refuses a DataDomeSliderTask when the challenge URL's own
         # `t` marker says DataDome already has this exact proxy exit
-        # flagged. Retrying on the SAME session (--block-retries) will not
-        # help — only a genuinely different --proxy/--proxy-file exit can.
+        # flagged. Retrying this exact exit will not help. With --proxy-file,
+        # the next --block-retries attempt advances the pool automatically;
+        # a single --proxy value must be replaced by the operator.
         log.warning(
             "Captcha solve refused by 2Captcha (this proxy's exit IP is already flagged by "
             "DataDome, not a transient error): %s — a different --proxy/--proxy-file exit "
@@ -487,7 +482,8 @@ async def _maybe_solve_captcha(
             "%s marker present, no currently-solvable challenge found on this page — reporting "
             "this run as blocked. If this vendor is 'datadome' and a slider challenge was expected, "
             "confirm --proxy/--proxy-file is set (DataDomeSliderTask has no proxyless path); "
-            "otherwise your levers are --block-retries (retry the same session), a different "
+            "otherwise --block-retries retries the scrape (and advances a --proxy-file pool), "
+            "or use a different "
             "--proxy exit, or a --cdp-endpoint session with its own device identity.",
             result.get("vendor"),
         )
@@ -641,6 +637,9 @@ async def scrape_category(
             continue
         last_html = html
 
+        if status == 404 and page_num > start_page:
+            log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
+            break
         if status is not None and status >= 400:
             # DataDome answers with a 403 rather than a redirect, so a >=400
             # here is the single most direct block signal this engine has.
@@ -683,7 +682,15 @@ async def scrape_category(
                 if gp.count_result_cards(html) == 0:
                     blocked = True
 
-        products = gp.safe_parse_category_listing(html, category_slug=slug, page_url=page_url)
+        parse_result = gp.parse_category_listing_safely(
+            html, category_slug=slug, page_url=page_url,
+        )
+        if parse_result.failed:
+            if page_num not in failed_pages:
+                failed_pages.append(page_num)
+            log.error("Listing page %d could not be parsed; continuing with the next reconstructed page URL.", page_num)
+            continue
+        products = parse_result.products
         if not products:
             if page_num == start_page and not blocked:
                 log.warning(
@@ -695,7 +702,8 @@ async def scrape_category(
                 )
             else:
                 log.info("Listing page %d yielded zero cards — treating that as the end of the category.", page_num)
-            pages_completed += 1
+            if page_num == start_page:
+                pages_completed += 1
             break
 
         pages_completed += 1
@@ -716,8 +724,10 @@ async def scrape_category(
         if page_num >= start_page + args.max_pages - 1:
             break
         if not gp.has_next_page(html):
-            log.info("Page %d's own pagination advertises no Next page — stopping.", page_num)
-            break
+            log.info(
+                "Page %d's pagination advertises no Next page; probing the reconstructed next URL "
+                "and stopping only when it yields no new product data.", page_num,
+            )
         await asyncio.sleep(args.page_delay)
 
     merged = merge_pages(pages)[: args.max_results]
@@ -751,12 +761,15 @@ async def scrape_product_page(
         await _enable_scraping_browser_auto_solve(context, page)
 
     status, last_error = await _goto_with_retries(
-        page, start_url, retries=args.retries, retry_delay=args.retry_delay
+        page, start_url, retries=args.retries, retry_delay=args.retry_delay,
+        proxy_pool=proxy_pool, proxy=proxy,
     )
     if last_error is not None:
         await context.close()
         log.error("Product page permanently failed to load: %s", last_error)
-        return [], False, True, 0, []
+        if proxy_pool is not None and proxy is not None:
+            return [], True, False, 0, [1]
+        return [], False, True, 0, [1]
 
     if status is not None and status >= 400:
         log.warning("Product page returned HTTP %d — treating as blocked, not empty.", status)
@@ -833,11 +846,14 @@ async def scrape_pricing_page(
         await _enable_scraping_browser_auto_solve(context, page)
 
     status, last_error = await _goto_with_retries(
-        page, start_url, retries=args.retries, retry_delay=args.retry_delay
+        page, start_url, retries=args.retries, retry_delay=args.retry_delay,
+        proxy_pool=proxy_pool, proxy=proxy,
     )
     if last_error is not None:
         await context.close()
         log.warning("Pricing page failed to load: %s", last_error)
+        if proxy_pool is not None and proxy is not None:
+            return [], True, False
         return [], False, True
 
     blocked = bool(status is not None and status >= 400)
@@ -960,7 +976,10 @@ def _scrape_via_scraper_api(
         return products, blocked, False, 1, []
 
     slug = gp.category_slug_from_url(start_url) or args.category
-    products = gp.safe_parse_category_listing(html, category_slug=slug, page_url=start_url)
+    parse_result = gp.parse_category_listing_safely(html, category_slug=slug, page_url=start_url)
+    if parse_result.failed:
+        return [], blocked, False, 0, [gp.page_number_from_url(start_url) or 1]
+    products = parse_result.products
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS) and gp.count_result_cards(html) < MIN_CARD_MATCHES:
         blocked = True
     if not products and not blocked:
@@ -1116,11 +1135,8 @@ async def run(args: argparse.Namespace) -> int:
                     scrape_fn = _scrape_pricing_only
                 else:
                     scrape_fn = scrape_category
-                # "Retry before you rotate": a blocked, zero-product outcome
-                # is retried on the SAME browser connection (same exit IP,
-                # same CDP device identity) before this run gives up. Each
-                # attempt still gets a fresh context/cookie jar from the
-                # scrape function's own _new_context call.
+                # Each attempt gets a fresh context. A proxy pool advances to
+                # its next live exit; direct/CDP runs keep their fixed exit.
                 for block_attempt in range(args.block_retries + 1):
                     merged, blocked, remote_api_error, pages_completed, failed_pages = await scrape_fn(
                         args=args, start_url=start_url, browser=browser, proxy_pool=proxy_pool,
@@ -1130,8 +1146,8 @@ async def run(args: argparse.Namespace) -> int:
                         break
                     if block_attempt < args.block_retries:
                         log.warning(
-                            "Blocked with zero products (attempt %d/%d on this same browser session) "
-                            "— retrying on the SAME exit/identity rather than giving up immediately.",
+                            "Blocked with zero products (attempt %d/%d) — retrying the scrape; "
+                            "a proxy pool advances to its next live exit, while direct/CDP keeps its fixed identity.",
                             block_attempt + 1, args.block_retries + 1,
                         )
                         await asyncio.sleep(args.retry_delay)
@@ -1177,7 +1193,8 @@ async def _scrape_pricing_only(
             "so this parser is best-effort text matching and an empty result means 'no pricing "
             "could be read', never 'this product is free' (see g2_parser.py)."
         )
-    return products, blocked, remote_api_error, 0 if remote_api_error else 1, []
+    failed_pages = [1] if (blocked or remote_api_error) and not products else []
+    return products, blocked, remote_api_error, 0 if failed_pages else 1, failed_pages
 
 
 def main() -> int:

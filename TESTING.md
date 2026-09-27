@@ -28,8 +28,8 @@ findings were transcribed into `g2_parser.py`'s module docstring, marked
   subset of a category (253 products for `crm`, against 1661 found by
   paginating the DOM).
 
-**What HAS since happened, 2026-09-22: a real end-to-end run of all three
-engines — against a local stand-in for g2.com, not the real site.**
+**What HAS since happened, 2026-09-22: real-browser end-to-end runs against
+a local stand-in for g2.com, not the real site.**
 `local_e2e_test.py` (see its own section below) spins up a local HTTP
 server serving the exact CONFIRMED shapes above plus a stand-in 2Captcha
 server, and drives each real engine's real browser through the real
@@ -39,9 +39,10 @@ CHANGELOG.md), captcha detection, a full `DataDomeSliderTask` solve round
 trip (cookie applied via the driver's own native API, page reloaded,
 healthy content served — this run found and fixed a second bug too, the
 missing user-agent fallback, also in CHANGELOG.md), output writing, and
-every exit code the architecture defines. This is real, meaningful
-progress — it is proof the PIPELINE moves data correctly through a real
-browser, which offline `smoke_test.py` alone could never show.
+every exit code the architecture defines. Playwright and Puppeteer completed
+this scenario; Selenium hit a chromedriver/Chromium mismatch in this build
+and currently has structural/offline coverage instead. This is meaningful
+pipeline evidence, but not a claim that all three completed live E2E here.
 
 **What HAS also now happened, 2026-09-22 (same day, later): the first real
 run of THIS repo's own engine scripts against the REAL g2.com — from a
@@ -107,7 +108,7 @@ the one thing still untested.
 
 ## What `smoke_test.py` actually covers
 
-90 checks, all offline, all passing with **no** engine driver installed
+94 checks, all offline, all passing with **no** engine driver installed
 (`python3 smoke_test.py`). What they are, by category — these are the real
 groupings in the file, not a generic template:
 
@@ -232,8 +233,9 @@ product page fills `rating_10` and leaves `rating_5` empty; a DataDome wall
 with no proxy/key reports `EXIT_BLOCKED` and writes no file; a `--proxy-file`
 list with a genuinely dead first proxy (added 2026-09-23, the regression
 test for the proxy-rotation bug a real 10-proxy run found — see
-CHANGELOG.md) still completes with `EXIT_OK` by rotating to the next live
-proxy, rather than aborting the whole run as `remote_api_error`. Playwright
+CHANGELOG.md) still completes in category, standalone product and standalone
+pricing modes by rotating to the next live proxy, rather than aborting the
+whole run as `remote_api_error`. Playwright
 additionally gets the full `DataDomeSliderTask` round trip: task payload
 sent to the stand-in 2Captcha server (proxy fields and a real
 `navigator.userAgent`, both asserted present), solved cookie applied via
@@ -325,12 +327,10 @@ Four outcomes, and what each one means:
   `a[data-event-options][href*="/products/"]` still inside it and is its
   attribute still JSON; (3) did G2 rename a key inside that JSON
   (`product`, `product_id`, `category`, `vendor_id`, `product_type`).
-- **A page renders but `has_next_page()` stops the loop after page 1**:
-  compare the real pagination markup against the shapes documented in
-  `g2_parser.py` (`ul.pagination[aria-label="Pagination"]`,
-  `li.pagination__component.pagination__page-number`,
-  `pagination__component--disabled` at the edges). Page counts are
-  discovered, never hardcoded, so a markup change shows up exactly here.
+- **The logged Next-control hint disagrees with the fetched data**: compare
+  the real pagination markup against the shapes documented in
+  `g2_parser.py`. This no longer truncates the run: engines probe the
+  reconstructed `?page=N+1` URL and stop only on zero cards or no new SKU.
 
 Whatever you find, **updating `g2_parser.py` to match what you actually saw
 — with a saved, scrubbed fixture and a new `smoke_test.py` check against it
@@ -497,20 +497,19 @@ git push --tags
 Then, in the GitHub repo's Settings:
 
 - **Secrets and variables → Actions**: add `TWOCAPTCHA_KEY`,
-  `G2_CDP_ENDPOINT` / `G2_PROXY` (only if you want the `canary-cdp` job
-  using them — `canary-local` needs no secrets at all), and
+  `G2_CDP_ENDPOINT` / `G2_PROXY`. `canary-live` skips without `G2_PROXY`;
+  once configured it requires a complete three-page run. `canary-cdp`
+  behaves the same way for the managed-browser path. Also add
   `CLAUDE_CODE_OAUTH_TOKEN` (for `claude.yml` / `claude-code-review.yml` —
   both silently no-op without it, by design, rather than failing every PR
   check).
 - **Actions → canary → Run workflow**: dispatch it manually at least once
   rather than waiting a day for the cron and trusting the badge blind.
-  Note what this canary does and does not assert: it interprets the exit
-  code (a crash or bad usage fails the job; blocked / empty / remote API
-  error is a `::notice::`, because a CI runner's shared datacentre IP is
-  close to the worst possible exit for getting past DataDome), and it does
-  **not** assert a price floor the way a shopping-site sibling's canary
-  does — `price_confirmed_pct` of 0 is the correct result for a run
-  without `--with-pricing`.
+  The canary passes only on exit 0, `status == "complete"`, at least three
+  completed pages and the product-count floor. Without the required secret
+  it skips instead of turning a predictable DataDome block into permanent
+  noise. It deliberately does not assert a price floor: without
+  `--with-pricing`, `price_confirmed_pct` of 0 is correct here.
 
 ## 13. What "done" looks like
 

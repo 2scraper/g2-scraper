@@ -14,10 +14,9 @@ here proves the architecture (exit codes, precedence, dedupe, credential
 redaction, CLI validation, robots.txt compliance, engines importing with
 no driver present) AND that the confirmed data shapes parse correctly. It
 does NOT prove that this repo's own engine scripts get the same treatment
-against the live site: **no engine in this repo has ever run against
-g2.com** — the build environment's egress policy blocks the host, and both
-the live captures behind g2_parser.py came from a browser-rendering tool,
-not from `playwright_scraper.py`. That last step is still open.
+against the live site. Three real runs reached g2.com but were blocked by
+DataDome/proxy quality before collecting a product; the successful
+real-browser E2E remains a local stand-in. That last gap is still open.
 
 Run directly: `python3 smoke_test.py`
 """
@@ -474,6 +473,41 @@ def _():
 
 
 @check(
+    "the dead-first-proxy rotation fix also covers standalone product and pricing modes in all "
+    "three engines — these single-page paths previously converted the first dead proxy into a "
+    "fatal remote_api_error before --block-retries could advance --proxy-file"
+)
+def _():
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        product_start = src.index("def scrape_product_page(")
+        pricing_start = src.index("def scrape_pricing_page(", product_start)
+        product_section = src[product_start:pricing_start]
+        assert "if proxy_pool is not None and proxy is not None:" in product_section, (
+            f"{path}: standalone product navigation failure does not distinguish a rotatable "
+            f"proxy pool from a fixed/direct identity"
+        )
+        assert "return [], True, False, 0, [1]" in product_section, (
+            f"{path}: standalone product mode must report a dead pooled proxy as blocked so the "
+            f"outer retry loop advances the pool"
+        )
+
+        pricing_only_name = "def _scrape_pricing_only(" if path == "playwright_scraper.py" else "def scrape_pricing_only("
+        pricing_only_start = src.index(pricing_only_name)
+        pricing_only_section = src[pricing_only_start:]
+        assert "failed_pages = [1] if (blocked or remote_api_error) and not products else []" in pricing_only_section, (
+            f"{path}: standalone pricing failure is not preserved in failed_pages"
+        )
+        pricing_path = src[pricing_start:pricing_only_start] if pricing_start < pricing_only_start else src[pricing_start:]
+        rotation_is_local = "if proxy_pool is not None and proxy is not None:" in pricing_path
+        rotation_is_adapter = "if remote_api_error and proxy_pool is not None and proxy is not None:" in pricing_only_section
+        assert rotation_is_local or rotation_is_adapter, (
+            f"{path}: standalone pricing navigation failure remains fatal instead of becoming a "
+            f"rotatable blocked result when --proxy-file is active"
+        )
+
+
+@check(
     "parity fix 2026-09-23 (CLAUDE.md §4/§6): playwright_scraper.py's _goto_with_retries() now "
     "accepts proxy_pool=/proxy= and detects a dead-proxy marker via is_proxy_dead_error(), matching "
     "the capability selenium_scraper.py and puppeteer_scraper.py already had (a real, previously "
@@ -510,6 +544,42 @@ def _():
         src = (ROOT / path).read_text(encoding="utf-8")
         assert "status >= 400" in src, f"{path}: no HTTP-status block check"
         assert "failed_pages.append(page_num)" in src, f"{path}: a bad page does not degrade to a failed page"
+
+
+@check("the single credential scanner passes and tests.yml invokes it instead of carrying a second inline grep")
+def _():
+    scanner = ROOT / ".github" / "ci_checks.py"
+    result = subprocess.run(
+        [sys.executable, str(scanner)], cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    scanner_source = scanner.read_text(encoding="utf-8")
+    assert "URL_CREDENTIALS" in scanner_source
+    assert "SECRET_ASSIGNMENT" in scanner_source
+    workflow = (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    assert "python3 .github/ci_checks.py" in workflow
+    assert "grep -rnE" not in workflow
+
+
+@check("pre-publication release guards: Docker removes fixtures, live canary is strict, @claude is collaborator-only, and test scripts are not packaged")
+def _():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "rm -rf smoke_test.py tests __pycache__" in dockerfile
+
+    canary = (ROOT / ".github" / "workflows" / "canary.yml").read_text(encoding="utf-8")
+    assert "HAS_PROXY" in canary and "--max-pages 3" in canary
+    assert "if code != 0:" in canary
+    assert "elif code in (3, 4, 5)" not in canary
+
+    claude = (ROOT / ".github" / "workflows" / "claude.yml").read_text(encoding="utf-8")
+    assert "author_association" in claude
+    for role in ("OWNER", "MEMBER", "COLLABORATOR"):
+        assert role in claude
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    module_block = pyproject.split("py-modules = [", 1)[1]
+    assert '"smoke_test"' not in module_block
+    assert '"local_e2e_test"' not in module_block
 
 
 # --------------------------------------------------------------------------- #
@@ -605,6 +675,19 @@ def _():
         assert code == output_writer.EXIT_ZERO_PRODUCTS
         assert not Path(out).exists()
         assert not Path(f"{out}.meta.json").exists()
+
+
+@check("finish_run: a failed first/only page with zero products is 'empty', not 'partial' (CLAUDE.md §9: zero_products > partial)")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "out.json")
+        code = output_writer.finish_run(
+            products=[], out_path=out, fmt="json", engine="test", url="u",
+            pages_requested=1, pages_completed=0, failed_pages=[1],
+            blocked=False, remote_api_error=False, allow_empty=False, started_at=0.0,
+        )
+        assert code == output_writer.EXIT_ZERO_PRODUCTS
+        assert not Path(out).exists()
 
 
 @check("finish_run: partial (failed pages, some products) writes output and reports EXIT_PARTIAL")
@@ -1569,7 +1652,7 @@ def _():
     assert broken_row.product_id is None
 
 
-@check("safe_parse_category_listing degrades an unexpected parser exception to an empty page (which the engine records as a FAILED page -> EXIT_PARTIAL) instead of crashing a run and discarding its sibling pages")
+@check("safe listing parsing preserves parser failure state so engines cannot report it as an empty/complete page")
 def _():
     import unittest.mock as mock
 
@@ -1577,7 +1660,13 @@ def _():
         raise RuntimeError("selector engine exploded")
 
     with mock.patch.object(gp, "parse_category_listing", _boom):
+        result = gp.parse_category_listing_safely(listing_html(), "crm", "u")
+        assert result.failed is True and result.products == []
         assert gp.safe_parse_category_listing(listing_html(), "crm", "u") == []
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert "gp.parse_category_listing_safely(" in src
+        assert "gp.safe_parse_category_listing(" not in src
 
 
 @check("count_result_cards is the LISTING-shaped counter and never raises into a captcha decision")
@@ -1589,13 +1678,19 @@ def _():
     assert gp.count_result_cards("<html><body>not even close</body></html>") == 0
 
 
-@check("pagination is DISCOVERED from the markup, never hardcoded: has_next_page reads the Next control's disabled state, current_page_number reads G2's own current marker, and a page with no pagination block at all stops the loop")
+@check("pagination markup is only a hint: engines probe reconstructed URLs and stop on data, never solely on a missing/disabled Next selector")
 def _():
     assert gp.has_next_page(listing_html(next_disabled=False)) is True
     assert gp.has_next_page(listing_html(next_disabled=True)) is False
     assert gp.has_next_page("<html><body>no pagination here</body></html>") is False
     assert gp.current_page_number(listing_html()) == 1
     assert gp.current_page_number("<html><body>nothing</body></html>") is None
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        marker = "if not gp.has_next_page(html):"
+        start = src.index(marker)
+        block = src[start:start + 500]
+        assert "break" not in block, f"{path}: pagination still stops solely on the Next selector"
 
 
 @check("parse_product_page reads the SoftwareApplication JSON-LD (skipping the BreadcrumbList beside it) and puts G2's 0-10 composite score in rating_10 — NOT rating_5, and never both from one page")

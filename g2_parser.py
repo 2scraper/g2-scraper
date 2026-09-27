@@ -57,9 +57,9 @@ to buy at all.
 
 **CONFIRMED — category listing page**, e.g.
 `https://www.g2.com/categories/crm`, paginated with `?page=N` (111 pages
-for the `crm` slug alone at capture time; other categories differ, so page
-counts are DISCOVERED from the markup — see `has_next_page()` — never
-hardcoded per category).
+for the `crm` slug alone at capture time; other categories differ). The
+Next control is diagnostic only: engines reconstruct `?page=N+1` and stop
+on zero/newly-duplicated product data, never solely on a selector.
 
   - Each card: `div.content-card.category-product-card.x-category-product-card`
     (this module matches on `.category-product-card`, the stable middle
@@ -250,7 +250,8 @@ __all__ = [
     "is_known_scrape_target", "category_url", "product_url", "pricing_url",
     "grids_json_url", "slug_from_product_url", "category_slug_from_url",
     "make_sku",
-    "parse_category_listing", "safe_parse_category_listing",
+    "ListingParseResult", "parse_category_listing", "safe_parse_category_listing",
+    "parse_category_listing_safely",
     "count_result_cards", "has_next_page", "current_page_number",
     "extract_json_ld", "parse_product_page", "count_product_page_data",
     "parse_pricing_page", "count_pricing_tiers", "apply_pricing_tiers",
@@ -669,19 +670,43 @@ def parse_category_listing(
     return products
 
 
+@dataclass(frozen=True)
+class ListingParseResult:
+    """Result of parsing one listing page without losing error state.
+
+    An empty, successfully parsed page is a catalogue fact.  A parser
+    exception is a failed page.  Keeping those states distinct prevents an
+    engine from reporting a selector regression as an empty/complete run.
+    """
+
+    products: List[Product]
+    failed: bool = False
+
+
+def parse_category_listing_safely(
+    html: str,
+    category_slug: Optional[str] = None,
+    page_url: Optional[str] = None,
+) -> ListingParseResult:
+    """Parse one page while preserving whether parsing itself failed."""
+    try:
+        return ListingParseResult(parse_category_listing(html, category_slug, page_url))
+    except Exception:  # noqa: BLE001
+        log.exception("parse_category_listing raised — marking this page failed")
+        return ListingParseResult([], failed=True)
+
+
 def safe_parse_category_listing(
     html: str,
     category_slug: Optional[str] = None,
     page_url: Optional[str] = None,
 ) -> List[Product]:
-    """CLAUDE.md §6 wrapper: an unexpected parse exception degrades this one
-    page to an empty result (which the engine records as a FAILED page ->
-    EXIT_PARTIAL), never a crash that discards its siblings' rows."""
-    try:
-        return parse_category_listing(html, category_slug, page_url)
-    except Exception:  # noqa: BLE001
-        log.exception("parse_category_listing raised — degrading this page to empty")
-        return []
+    """Compatibility wrapper returning only products.
+
+    Engines must use :func:`parse_category_listing_safely` so they cannot
+    confuse a parser failure with a valid empty page.
+    """
+    return parse_category_listing_safely(html, category_slug, page_url).products
 
 
 def count_result_cards(html: str) -> int:
@@ -719,11 +744,11 @@ def has_next_page(html: str) -> bool:
     disabled`, which g2.com adds at either edge. Returns False when there
     is no pagination block at all (a single-page category).
 
-    This is the cheap signal. The AUTHORITATIVE stop condition an engine
-    should also honour is simpler and immune to markup changes: keep
+    This is a diagnostic hint only. The AUTHORITATIVE stop condition is
+    simpler and immune to markup changes: keep
     requesting `?page=N+1` until a fetched page yields zero
-    `.category-product-card` elements (`count_result_cards(html) == 0`).
-    Use both — this one to stop a page early, that one as the backstop.
+    `.category-product-card` elements or adds no new SKU. Engines must not
+    stop solely because this function returns False.
     """
     try:
         soup = BeautifulSoup(html, "html.parser")
@@ -743,7 +768,7 @@ def has_next_page(html: str) -> bool:
             return True
         return False
     except Exception:  # noqa: BLE001
-        log.exception("has_next_page raised — reporting False (stop paginating)")
+        log.exception("has_next_page raised — reporting False (diagnostic hint only)")
         return False
 
 

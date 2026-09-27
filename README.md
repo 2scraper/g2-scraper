@@ -30,23 +30,23 @@ could do.
 
 | Area | Status | How it was actually verified |
 |---|---|---|
-| Offline test suite | **90/90 passing** | `python3 smoke_test.py`, run 2026-09-23, with no engine driver installed |
+| Offline test suite | **94/94 passing** | `python3 smoke_test.py`, run 2026-09-23; includes parser-failure, data-terminated pagination, proxy rotation and the centralized credential guard |
 | g2.com page structure — category card DOM + its `data-event-options` JSON, product-page `SoftwareApplication` JSON-LD, pricing-page text, pagination markup | **Verified live, 2026-09-22** | A real browser navigating real g2.com pages (a browser tool), transcribed into `g2_parser.py` as `CONFIRMED` — **not** through this repo's own engines |
 | DataDome is the bot protection | **Verified live, 2026-09-22** | `window.DataDomeJsTag`, `dataDomeOptions.endpoint = "https://dd.g2.com/js/"` v5.10.0 and a `datadome` cookie, observed on a real page |
 | `robots.txt`, incl. the stricter AI-crawler group | **Verified live, 2026-09-22** | Fetched and read; the one extra rule is transcribed in `g2_parser.py` |
 | `categories/{slug}/grids.json` exists and returns a ranked *subset* | **Verified live, 2026-09-22** | 253 products returned for `crm`, against 1661 found by paginating the category DOM. **Not wired into this repo** — see "Known limitations" |
-| **All three engines, end-to-end, real browser/driver** | **First run 2026-09-22, extended 2026-09-23 — against a local stand-in, NOT real g2.com** | A local HTTP server serving the exact confirmed fixture shapes (reused from `smoke_test.py`) plus a local stand-in 2Captcha `createTask`/`getTaskResult` server and a local forward proxy. Every real engine ran its real browser through real navigation, pagination (incl. resuming from a `?page=N` `--url`), parsing, a full `DataDomeSliderTask` solve round trip (cookie applied via the driver's own native API, page reloaded, healthy content served on retry), a `--proxy-file` rotation past a genuinely dead first proxy (2026-09-23, the regression test for the bug below), output writing, and exit codes 0/2/3/5. Playwright and Puppeteer confirmed live in this build; Selenium's copy of the same scenario hit an unrelated chromedriver/Chromium version mismatch in this particular build environment (not a code issue — see `CHANGELOG.md`) and is covered instead by the offline structural suite. This is real proof the PIPELINE works; it is not proof g2.com's real markup still matches `g2_parser.py`'s captured shapes — see the next row |
-| This repo's engine scripts run against **live g2.com specifically** | **Run THREE times for real, 2026-09-22/23 — from outside this build/test environment (whose own egress blocks g2.com entirely, confirmed the same week), all blocked** | Run 1 (`--cdp-endpoint`): HTTP 403, a real DataDome interstitial (`geo.captcha-delivery.com/interstitial/?...`, `title="DataDome Device Check"`, capture at `tests/fixtures/g2_datadome_interstitial.html`) — surfaced and fixed the `/interstitial/`-path bug below. Run 2 (`G2_PROXY`, no `--cdp-endpoint`): HTTP 403, the OTHER real DataDome shape (`.../captcha/?...`, `title="DataDome CAPTCHA"`, a real `t=bv` banned-IP marker, capture at `tests/fixtures/g2_datadome_captcha_banned_ip.html`) — reached a REAL `DataDomeSliderTask` `createTask` call for the first time, which 2Captcha itself refused (`ERROR_BAD_PARAMETERS ... your IP address is banned`). Run 3 (`--proxy-file` with 10 fresh proxies, `--block-retries 9`): 6 of 10 proxies attempted (2 `cloudflare_managed_challenge`, 2 more `t=bv` rejections) before the run stopped dead on a plain navigation timeout — not a block at all — never trying proxies 7-10. That exposed a real bug in the proxy-rotation logic itself (not a captcha/detection gap this time); see the newest `CHANGELOG.md` entry. No run has scraped a product yet — but all three are real, and each found and fixed something real |
+| Browser E2E against a local stand-in | **Playwright and Puppeteer verified; Selenium structurally covered but not live-verified in this build** | The real-browser scenario covers navigation, data-terminated pagination, resume from `?page=N`, parsing, DataDome solve/cookie reload, dead-proxy rotation, output and exit codes. Selenium hit a chromedriver/Chromium mismatch in this environment; do not read this row as proof that all three completed live E2E here. |
+| This repo's engine scripts run against **live g2.com specifically** | **Run THREE times for real, 2026-09-22/23 — from outside this build/test environment (whose own egress blocks g2.com entirely, confirmed the same week), all blocked** | Run 1 (`--cdp-endpoint`): HTTP 403, a real DataDome interstitial (`geo.captcha-delivery.com/interstitial/?...`, `title="DataDome Device Check"`, capture at `tests/fixtures/g2_datadome_interstitial.html`) — surfaced and fixed the `/interstitial/`-path bug below. Run 2 (`G2_PROXY`, no `--cdp-endpoint`): HTTP 403, the OTHER real DataDome shape (`.../captcha/?...`, `title="DataDome CAPTCHA"`, a real `t=bv` banned-IP marker, capture at `tests/fixtures/g2_datadome_captcha_banned_ip.html`) — reached a REAL `DataDomeSliderTask` `createTask` call for the first time, which 2Captcha itself refused (`ERROR_BAD_PARAMETERS ... your IP address is banned`). Run 3 (`--proxy-file` with 10 fresh proxies, `--block-retries 9`): 6 of 10 proxies attempted (2 `cloudflare_managed_challenge`, 2 more `t=bv` rejections) before the run stopped dead on a plain navigation timeout — not a block at all — never trying proxies 7-10. That exposed a proxy-rotation bug which is now fixed for category, product and pricing modes; see `CHANGELOG.md`. No run has scraped a product yet — but all three are real, and each found and fixed something real |
 | Pricing text parser against a live pricing page | **Parser verified against captured page text, and now against a local fixture through a real engine — not yet against a real g2.com pricing page** | The captured text shape is real; the local fixture run (above) proves the whole fetch-parse-write path works; no engine has fetched a REAL pricing page itself |
 | 2Captcha integrations (proxy, `--cdp-endpoint`, fingerprint, `--scraper-api`) | **Mixed, updated after two real runs: `DataDomeSliderTask` verified end-to-end against a local stand-in (2026-09-22); the `--cdp-endpoint` run found real evidence (not proof) that the Scraping Browser's own auto-solve doesn't currently cover DataDome; the REST `DataDomeSliderTask` path now HAS reached a real 2Captcha `createTask` call against g2.com — and got a real, informative rejection (the proxy's own IP was already DataDome-flagged), not a solve** | See `captcha_solver.py`'s module docstring and `CHANGELOG.md`'s two newest entries. Still open: whether `DataDomeSliderTask` can actually solve either real shape when the proxy exit ISN'T already flagged — needs a fresh, unflagged proxy session to test, and costs real 2Captcha balance |
 | CI workflows | **Written, never executed** | No GitHub remote is configured yet — `TESTING.md` step 12 is how they first run |
 
 So: **the site knowledge is real, the architecture is tested, the whole
 pipeline has been proven to work end-to-end against a local stand-in, and
-it has now been run twice for real against g2.com itself — both blocked,
-exactly as this repo's own detection said they should be, and each run
-found (and fixed) something real: a missed challenge shape, then a silent
-gap in how a real 2Captcha rejection was reported.** `TESTING.md` is the
+it has now been run three times for real against g2.com itself — all
+blocked, exactly as this repo's own detection said they should be. Those
+runs found a missed challenge shape, a silent 2Captcha-rejection gap, and
+a proxy-rotation failure.** `TESTING.md` is the
 checklist for what's still open, and a fresh (not-already-flagged) proxy
 session is the single highest-value thing left to try.
 
@@ -264,7 +264,7 @@ never drift apart.
 | `--page-delay` | `1.5` | Seconds between listing pages |
 | `--retries` | `2` | Retries on a page's navigation failure |
 | `--retry-delay` | `3.0` | Seconds between those retries |
-| `--block-retries` | `2` | On a blocked, zero-product outcome, retry on the **same** session/exit IP this many extra times. "Retry before you rotate" — a fresh proxy/CDP identity stays a manual decision between runs. Worth knowing here specifically: DataDome's own slider challenge IS solvable via `--solve-captcha` + a proxy (see "Read this before trusting a run" above) — without a proxy configured, retrying is one of the few other levers this repo has |
+| `--block-retries` | `2` | Retry a blocked zero-product scrape this many extra times. With `--proxy-file`, every attempt advances to the next live proxy and starts a fresh browser context/driver; direct and fixed-CDP runs keep their configured exit identity |
 
 **Pricing**
 
@@ -390,13 +390,11 @@ listing row has `rating_5`, and a `--with-pricing` row with
 ## Pagination
 
 Confirmed real: a category listing paginates with `?page=N` (111 pages for
-the `crm` slug at capture time). **Page counts are discovered from the
-markup, never hardcoded per category** — `has_next_page()` reads the Next
-control's disabled state and `current_page_number()` reads G2's own current
-marker, so a category with three pages and one with 111 both terminate
-correctly. `--max-pages` is the hard cap on top of that. Each `?page=N` URL
-is rebuilt from the slug rather than string-edited from the caller's
-`--url`. Rows are deduped by `sku` in page order, and a run that failed
+the `crm` slug at capture time). Each next URL is rebuilt from the slug.
+The rendered Next control is retained as a diagnostic, but termination is
+based on data: a page with zero cards or no new SKU ends the listing.
+`--max-pages` and `--max-results` remain hard caps. Rows are deduped by
+`sku` in page order, and a run that failed
 some pages but collected products reports `partial` (exit `6`) rather than
 a plausible-looking `complete`.
 
@@ -471,7 +469,7 @@ wait buys is slack for DataDome's own asynchronous checks, not for content.
 ## Development
 
 ```bash
-python3 smoke_test.py      # 90 checks, no engine driver required
+python3 smoke_test.py      # 94 checks, no engine driver required
 python3 env_config.py      # shows what .env / the environment applied, never a secret
 python3 diff_runs.py a.json b.json   # added / removed / changed / source_changed between two completed runs
 ```
@@ -488,11 +486,10 @@ captcha auto-solve with a counter shaped for the page it's looking at.
 
 CI: the offline suite on Python 3.9 and 3.12, one `engine-smoke` job per
 engine in its own virtualenv, a Docker build that builds/runs/launches a
-real browser, and a daily `canary` that runs the local-first default
-against real g2.com and interprets the exit code (a crash or bad usage
-fails; blocked/empty/remote-API-error is a notice, because a CI runner's
-datacentre IP is close to the worst possible exit for getting past
-DataDome).
+real browser, and two opt-in live canaries. The local-browser canary skips
+without `G2_PROXY`; the managed-browser canary skips without
+`G2_CDP_ENDPOINT`. When enabled, each requires a complete three-page run,
+so blocked, empty and partial output cannot masquerade as a green check.
 
 ## License
 

@@ -259,9 +259,7 @@ def write_meta(
 # finish_run — the single place every engine calls to decide exit code,
 # whether to write output at all, and whether to write a sidecar. Keeping
 # this in one shared function is what stops the three engines' exit-code
-# mapping from drifting apart. Structurally identical to stockx-scraper's
-# post-audit-fix finish_run() (commit 00b5570) — see that file's comment
-# for the full incident writeup this precedence order fixes.
+# mapping from drifting apart.
 # --------------------------------------------------------------------------- #
 def finish_run(
     *,
@@ -288,13 +286,27 @@ def finish_run(
     partial = bool(failed_pages) and pages_completed > 0
     zero_products = len(products) == 0
 
-    # Outcome precedence — decided ONCE, independent of --allow-empty.
+    # Outcome precedence — decided ONCE, independent of --allow-empty, and
+    # identical across every 2scraper family member (CLAUDE.md §9):
+    # remote_api_error > blocked > zero_products > partial > complete.
     # `--allow-empty` controls only whether a zero-product result gets
     # WRITTEN as a file (below); it must never launder a blocked or
     # remote-API-error run into a "complete" status just because the
     # caller also passed --allow-empty, and it must never do so just
     # because SOME batches did return results while the run was, in fact,
     # blocked partway through.
+    #
+    # zero_products is checked before partial deliberately: a run that
+    # collected no products at all is reported as "empty", even if the
+    # reason was a parser exception on its only page rather than a
+    # genuinely empty category — `failed_pages` still records that page,
+    # and the engine's own log line for it is the diagnostic detail, same
+    # as this function already treats zero_products for blocked/
+    # remote_api_error runs. (A prior draft of this function swapped this
+    # order and cited a sibling repo, stockx-scraper commit 00b5570, as
+    # precedent for doing so; that repo's actual finish_run() checks
+    # zero_products before partial, same as here — the citation did not
+    # hold up, so this stays in line with CLAUDE.md §9 and every sibling.)
     if remote_api_error:
         status, exit_code = "remote_api_error", EXIT_REMOTE_API_ERROR
     elif blocked:

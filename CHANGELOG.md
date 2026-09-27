@@ -9,6 +9,34 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Fixed — 2026-09-23: pre-publication audit hardening
+
+- Listing parser exceptions now carry an explicit failed-page state through
+  every engine and Scraper API path (`g2_parser.parse_category_listing_safely`
+  returns a `ListingParseResult`, not a bare list), so a parser exception is
+  never confused with a page that genuinely rendered zero results. The
+  failed page still lands in `failed_pages` and the engine's own log either
+  way; an uncommitted draft of this fix additionally reordered
+  `finish_run()`'s outcome precedence so this made the run exit "partial"
+  instead of "empty" even with zero products collected, citing a sibling
+  repo as precedent for the reorder — that citation didn't hold up (the
+  sibling checks zero_products before partial, same as here), so the
+  precedence order was left exactly as CLAUDE.md §9 states it.
+- Category pagination now treats G2's Next control as a diagnostic hint.
+  Engines probe reconstructed `?page=N+1` URLs and terminate on zero cards or
+  no new SKU, so a selector change cannot silently truncate a complete run.
+- The Docker image removes `tests/fixtures` after the build-time smoke suite,
+  matching the CI assertion that the published image contains no test suite.
+- The live canaries now skip without a configured proxy/CDP secret and, when
+  enabled, require a complete three-page result. Blocked, empty, remote-error,
+  and partial outcomes no longer produce a misleading green canary.
+- Public `@claude` triggers are restricted to owners, members and
+  collaborators. Credential detection now has one implementation shared by
+  the offline suite and CI, and test-only modules are no longer packaged.
+- Dead-first-proxy rotation now covers standalone product and pricing URLs in
+  all three engines, not only category mode. These failures remain explicit in
+  `failed_pages`, and the local browser E2E exercises both single-page paths.
+
 ### Fixed — 2026-09-23: a real 10-proxy `--proxy-file` run stopped after one navigation failure, never rotating past it
 
 Roman's next live test tried a whole list of 10 fresh proxies:
@@ -59,15 +87,11 @@ even a `net::ERR_*` code — never trying proxies 7 through 10 at all.
   141) fails EVERY selenium e2e check here, including the pre-existing
   ones, not just the new one — but its code is byte-identical to
   puppeteer's already-confirmed fix and is covered by the offline
-  structural check (`smoke_test.py`, 90/90).
-- **Not yet resolved, flagged honestly rather than silently left out:**
-  the same `remote_api_error=True`-on-first-failure pattern exists,
-  unfixed, in each engine's `scrape_product_page()` /
-  `scrape_pricing_page()` (single-page fetches, not the paginated
-  category loop this fix covers) — a `--product`/`--url .../reviews` run
-  with a `--proxy-file` would hit the identical bug. Out of scope for
-  this fix (Roman's real run was `--category`), tracked as a known
-  follow-up.
+  structural check (`smoke_test.py`).
+- **Follow-up resolved by the pre-publication audit above:** the identical
+  first-dead-proxy failure in standalone `scrape_product_page()` and pricing
+  mode now becomes a rotatable blocked result when `--proxy-file` is active;
+  fixed/direct identities retain the fatal remote-error outcome.
 - Also observed, not itself a bug: 2 of the 6 attempts in Roman's run hit
   `cloudflare_managed_challenge`, a DIFFERENT block shape than DataDome
   with no 2Captcha task type mapped to it in this family at all — by
