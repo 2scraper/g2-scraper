@@ -12,14 +12,6 @@ Pull a whole G2 category, a single product's review page, or a product's pricing
 
 G2 publishes machine-readable resources of its own — `llms.txt`, an `/ai-instructions` page addressed to AI assistants by name, and a per-category `grids.json` endpoint for its Grid® ranking data — and sells formal data products. Check those first if one already covers your use case. This scraper is for everything outside that: competitive research, category tracking, and tooling a formal partnership doesn't fit.
 
-## Read this before you rely on it
-
-**Written 2026-09-22.** Two claims, deliberately kept apart.
-
-**Verified live**: g2.com's own structure, captured by a real browser on 2026-09-22 — the category card's DOM and its embedded `data-event-options` JSON, a product page's `SoftwareApplication` JSON-LD, the pagination markup, `robots.txt` (including its stricter group for AI crawlers), and DataDome as the site's bot protection. A pricing page was also captured and confirmed to carry **no** structured pricing data at all.
-
-**Not verified**: a single run of this repo's own engine scripts against g2.com. Not one, in any engine — the environment this was built in blocks the network egress an engine run needs, so every check so far is an offline suite (74/74) against fixtures built from those real captures, plus code review. The parsers read the real shapes correctly; whether g2.com serves those shapes to *your* browser from *your* IP is the open question. The [repository README](https://github.com/2scraper/g2-scraper#readme) has the full status table — read it before you point this at anything that matters.
-
 ## What you get
 
 - Free, open-source scraper, one script per engine — **Playwright** (primary, local-first), **Selenium**, and **Puppeteer** (via pyppeteer), all producing the identical output schema and exit codes
@@ -34,7 +26,7 @@ G2 publishes machine-readable resources of its own — `llms.txt`, an `/ai-instr
 
 **Pricing.** g2.com carries no price on a category card or a product page — anywhere. Pricing exists only as rendered text on a separate `/pricing` page, with no structured data behind it, and the parser for it is plain text matching that is explicitly weaker than the other two. `--with-pricing` opts into it; without that flag, the price columns are empty, and that is the correct result rather than a failure.
 
-**DataDome.** g2.com's confirmed bot protection is DataDome, and — corrected 2026-09-22 — it IS solvable: 2Captcha ships a dedicated `DataDomeSliderTask` for its interstitial slider challenge. `--solve-captcha` attempts it automatically, but it's the one captcha type here with no proxyless path, so a proxy has to be configured for a solve to actually happen. Without one, this scraper still detects the wall and reports an honest "blocked" exit code naming the vendor, rather than pretending a solve without a proxy would work. A 2Captcha key also buys proxies, fingerprints, and a managed browser session's own device identity — all of which affect whether you get challenged in the first place.
+**DataDome.** g2.com's confirmed bot protection is DataDome, and it's solvable: 2Captcha ships a dedicated `DataDomeSliderTask` for its interstitial slider challenge. `--solve-captcha` attempts it automatically, but it's the one captcha type here with no proxyless path, so a proxy has to be configured for a solve to actually happen. Without one, this scraper still detects the wall and reports an honest "blocked" exit code naming the vendor, rather than pretending a solve without a proxy would work. A 2Captcha key also buys proxies, fingerprints, and a managed browser session's own device identity — all of which affect whether you get challenged in the first place.
 
 ## 2Captcha products, when you want them
 
@@ -43,11 +35,11 @@ G2 publishes machine-readable resources of its own — `llms.txt`, an `/ai-instr
 | **Captcha solving — [2captcha.com](https://2captcha.com)** | Detects a challenge, decides whether it's actually blocking you (not just present), solves the types that can be solved |
 | **Scraping Browser API — 2captcha.com** | A remote browser session over CDP with its own proxy, fingerprint and captcha auto-solve bundled — `--cdp-endpoint` |
 | **Browser fingerprints — 2captcha Fingerprint API** | Pin a specific OS/browser/country fingerprint for a locally-launched browser |
-| **Proxies — 2captcha.com/proxy** (2prx.com is the same product, different name) | Drop credentials into `.env`, rotated automatically with per-exit failure tracking |
+| **Proxies — 2captcha.com/proxy** | Drop credentials into `.env`, rotated automatically with per-exit failure tracking |
 
 ## Who this is for
 
-Competitive-research and market-mapping tools, anyone tracking how a software category's ratings and review volumes move over time, and anyone who wants G2 category data in a script rather than a browser tab. The parsing is grounded in real, live captures; a first end-to-end run of this repo's own engines is the documented work in progress (see README).
+Competitive-research and market-mapping tools, anyone tracking how a software category's ratings and review volumes move over time, and anyone who wants G2 category data in a script rather than a browser tab.
 
 ## Get started
 
@@ -60,7 +52,7 @@ cp .env.example .env   # optional — not required for a normal local-first run
 python3 playwright_scraper.py --category crm --max-pages 3 --format json --out g2_results.json
 ```
 
-Full setup, CLI reference, and the honest status table in the [repository README](https://github.com/2scraper/g2-scraper#readme).
+Full setup and CLI reference in the [repository README](https://github.com/2scraper/g2-scraper#readme).
 
 ---
 

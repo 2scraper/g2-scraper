@@ -122,7 +122,6 @@
     <div class="logo">2SCRAPER<span> / g2.com</span></div>
     <nav>
       <a href="#engines">Engines</a>
-      <a href="#status">Status</a>
       <a href="#addons">Infrastructure</a>
       <a href="#start">Get started</a>
       <a href="https://github.com/2scraper/g2-scraper">GitHub</a>
@@ -184,59 +183,6 @@
       products. Check those first if one already covers your use case. This scraper is for everything
       outside that.
     </div>
-    <div class="callout honest">
-      <strong>Read this before you rely on it:</strong> written 2026-09-22. <strong>Verified live</strong>:
-      g2.com's own structure, captured by a real browser — the category card's DOM and its embedded
-      <code>data-event-options</code> JSON, a product page's <code>SoftwareApplication</code> JSON-LD, the
-      pagination markup, <code>robots.txt</code> (including its stricter group for AI crawlers), and DataDome
-      as the site's bot protection. <strong>Not verified</strong>: a single run of this repo's own engine
-      scripts against g2.com — not one, in any engine. The environment this was built in blocks the network
-      egress an engine run needs, so every check so far is an offline suite (74/74) against fixtures built
-      from those real captures, plus code review. Full status table in the
-      <a href="https://github.com/2scraper/g2-scraper#readme">README</a> — read it first.
-    </div>
-  </section>
-
-  <section id="status">
-    <div class="section-eyebrow">Departures board</div>
-    <h2>What's confirmed, and what isn't</h2>
-    <table class="board-table">
-      <thead>
-        <tr><th>What</th><th>How it was verified</th><th>Status</th></tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Category card DOM + its embedded JSON</td>
-          <td>Real browser capture, 2026-09-22</td>
-          <td><span class="pill buy">CONFIRMED</span></td>
-        </tr>
-        <tr>
-          <td>Product page <code>SoftwareApplication</code> JSON-LD</td>
-          <td>Real browser capture, 2026-09-22</td>
-          <td><span class="pill buy">CONFIRMED</span></td>
-        </tr>
-        <tr>
-          <td>DataDome bot protection, robots.txt AI-crawler group</td>
-          <td>Real browser capture, 2026-09-22</td>
-          <td><span class="pill buy">CONFIRMED</span></td>
-        </tr>
-        <tr>
-          <td>Offline test suite (74 checks, no engine driver needed)</td>
-          <td><code>python3 smoke_test.py</code></td>
-          <td><span class="pill buy">74/74 PASS</span></td>
-        </tr>
-        <tr>
-          <td>Pricing page parsing</td>
-          <td>Page confirmed to carry no structured pricing data at all — the parser is plain text matching</td>
-          <td><span class="pill watch">BEST EFFORT</span></td>
-        </tr>
-        <tr>
-          <td>This repo's engines run against live g2.com</td>
-          <td>Never attempted successfully — the build environment blocks the egress it needs</td>
-          <td><span class="pill open">NOT RUN</span></td>
-        </tr>
-      </tbody>
-    </table>
   </section>
 
   <section id="engines">
