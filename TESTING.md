@@ -10,7 +10,7 @@
 
 ## What `smoke_test.py` actually covers
 
-94 checks, all offline, all passing with **no** engine driver installed (`python3 smoke_test.py`). What they are, by category — these are the real groupings in the file, not a generic template:
+96 checks, all offline, all passing with **no** engine driver installed (`python3 smoke_test.py`). What they are, by category — these are the real groupings in the file, not a generic template:
 
 - **Engine isolation and parity.** All three engines import with none of playwright/selenium/pyppeteer present; each imports its driver at module level behind `try/except ImportError` (asserted structurally *and* behaviourally, by making the drivers unimportable in a subprocess); all three expose the identical `--flag` set, the same default output filename stem, and the same per-site constants block (`NAV_TIMEOUT_MS`, `READINESS_WAIT_MS`, `MIN_CARD_MATCHES`), with `READINESS_WAIT_MS` asserted shorter than an SPA sibling's because g2.com is server-rendered.
 - **URL routing and robots.txt.** A `/products/*/reviews/*` URL (the one extra rule g2.com's robots.txt gives AI crawlers) is refused before any fetch; a URL shape with no parser is refused rather than fetched and failed on; a `grids.json` URL is refused with a message naming why; and each of the three real page shapes routes to its own mode in all three engines.
@@ -22,7 +22,7 @@
 - **`env_config` and `.env.example`.** The two are asserted in sync in both directions; keys are `G2_`-prefixed; there is exactly one `_is_placeholder` implementation and a braced `{...}` fragment reads as unset; `apply_env` never overrides an explicitly-set CLI flag; a copied `.env.example` round-trips through the real loader with every credential reading as unset.
 - **`g2_parser.py` itself.** URL builders produce the confirmed-real shapes; slug extraction round-trips; `make_sku` prefers the slug and falls back to a deterministic fingerprint; `is_disallowed_path` honours the stricter rule set and `is_known_scrape_target` allowlists exactly four shapes without contradicting it; the listing parser reads the real card shape and isolates one malformed card from its siblings; `safe_parse_category_listing` degrades a parser exception to an empty page; pagination is discovered from the markup rather than hardcoded; the product parser takes the rating scale from the page's own `bestRating` and leaves **both** rating columns empty on an unrecognised one; the pricing parser skips the page's own summary sentence and footnote and returns `[]` (never a raise, never "free") on non-matching HTML; `apply_pricing_tiers` uses the lowest tier and stamps `price_source="pricing_page_text"`.
 - **End-to-end, as close as offline gets.** A full listing page round-trips through `finish_run()` as a clean `complete` run with the g2 columns intact in both JSON and CSV; the pricing-only row for a `--url .../pricing` run is identical in all three engines; and each engine's `run()` is driven end-to-end over the browserless `--scraper-api` path with a fake client returning the fixtures, for all three page shapes (listing → `EXIT_OK`, product → `EXIT_OK`, DataDome wall → `EXIT_BLOCKED` with no file and no sidecar).
-- **`diff_runs.py` and `scraper_api_client.py`.** Added/removed/price-changed against two real `finish_run()` outputs; a refusal to diff a non-`complete` run; the 2Captcha client rejecting a missing key and honouring the `--captcha-api`/`--scraper-api-url` overrides.
+- **`diff_runs.py` and `scraper_api_client.py`.** Added/removed/price-changed against two real `finish_run()` outputs; a refusal to diff a non-`complete` run; the 2Captcha client rejecting a missing key and honouring the `--captcha-api`/`--scraper-api-url` overrides; `--scraper-api-cdp` structurally (all three engines define the flag and wire `cdp_url` through) and behaviourally (a faked `scrape_url` confirms the built `cdpurl` carries the requested country/profile id, plain `--scraper-api` is unaffected when the flag is absent, and `--scraper-api-cdp` without `--scraper-api` is `EXIT_BAD_USAGE`).
 
 What `smoke_test.py` cannot do is tell you whether g2.com will serve any of those shapes to *your* browser from *your* IP. That's the checklist below. It also can't tell you whether a real browser, driven by this repo's own engine code, actually gets from a page load to a written output row — because it never launches one. `local_e2e_test.py` (next section) closes that gap without needing real g2.com access at all; the numbered checklist after it is for the one thing that still requires the real site.
 
@@ -147,13 +147,24 @@ python3 playwright_scraper.py --category crm --max-results 10 --out /tmp/g2_cdp.
 
 **This same rule means `DataDomeSliderTask` never runs under `--cdp-endpoint`.** That task requires a proxy we hold the credentials for; with the local proxy nulled out, `_maybe_solve_captcha()` always calls it with `proxy=None`, which the code refuses outright (`"warning_no_proxy"`) rather than attempting a solve that would validate against the wrong exit IP. So a `--cdp-endpoint` run's only path to solving DataDome is 2Captcha's own `Captcha.setAutoSolve`, armed with a wildcard on every page load — whether their Scraping Browser backend covers DataDome through that mechanism is unconfirmed by this project. If you run this step and a DataDome wall shows up, the single most useful thing to record is whether it got solved anyway (watch the log for `[Scraping Browser API] captcha solved`/`solve failed`/`captcha detected` — see `_enable_scraping_browser_auto_solve`).
 
-## 8. The browserless Scraper API (`--scraper-api`), for real
+## 8. The browserless Scraper API (`--scraper-api` / `--scraper-api-cdp`), for real
 
 ```bash
 python3 playwright_scraper.py --category crm --scraper-api --out /tmp/g2_scraper_api.json
+python3 playwright_scraper.py --category crm --scraper-api --scraper-api-cdp \
+    --scraper-api-country us --out /tmp/g2_scraper_api_cdp.json
 ```
 
 A different product from `--cdp-endpoint`'s Scraping Browser API (see `scraper_api_client.py`). A single static fetch: no pagination loop, and `--proxy`/`--cdp-endpoint`/`--fingerprint`/`--max-pages`/`--page-delay` are ignored with a warning. Not a documented DataDome bypass — expect it to be challenged like anything else, and record what happens.
+
+Worth specifically testing with `--scraper-api-cdp`, neither yet exercised
+against a real 2Captcha/g2.com session: whether it actually lands on the
+`--scraper-api-country` locale requested, and whether a DataDome challenge
+shown during this fetch is actually solved on 2Captcha's own side of that
+Scraping Browser session before the HTML comes back at all. `smoke_test.py`
+only proves the `cdpurl` gets built correctly and reaches
+`scraper_api_client.scrape_url` — against a fake response, not a real
+2Captcha task.
 
 ## 9. The residential proxy (`--proxy` / `G2_PROXY`), for real
 
@@ -196,3 +207,4 @@ In the GitHub repo's Settings:
 - At least one manually-dispatched `canary.yml` run, looked at — not just the badge — including whichever of the outcomes in step 2 it landed on.
 - Steps 2 and 3 run at least once each on a real network, with their results written down: which exit code, whether DataDome fired, and whether the pricing text parser matched anything.
 - If any of that disagreed with `g2_parser.py`: the parser updated to match what you actually saw, with a fixture and a new `smoke_test.py` check, per `CONTRIBUTING.md`.
+- Step 8's two open `--scraper-api-cdp` questions (locale pinning and actual DataDome auto-solve) answered one way or the other, with README/CHANGELOG updated from "wired, not yet exercised live" to whatever was actually observed.

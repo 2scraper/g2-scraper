@@ -154,9 +154,12 @@ counted as one toggle).
 | `--twocaptcha-key` | — | (or `TWOCAPTCHA_KEY`) |
 | `--min-score` | `0.3` | 2Captcha's own `minScore` field on a reCAPTCHA v3 task |
 | `--captcha-api` | — | Override the 2Captcha REST base URL (testing only) |
-| `--scraper-api` | off | Fetch via 2Captcha's browserless Scraper API instead of launching any browser. Requires a key. `--max-pages`/`--page-delay`/`--proxy`/`--cdp-endpoint`/`--fingerprint` are ignored in this mode — a single static fetch has no pagination loop and brings its own exit IP |
+| `--scraper-api` | off | Fetch via 2Captcha's browserless Scraper API instead of launching any browser. Requires a key. `--max-pages`/`--page-delay`/`--proxy`/`--cdp-endpoint`/`--fingerprint` are ignored in this mode — a single static fetch has no pagination loop and brings its own exit IP. By itself this mode has no captcha solving and no documented way to pin the exit country/locale — see `--scraper-api-cdp` |
 | `--scraper-api-timeout` | `60` | Seconds 2Captcha itself waits for the page (1-120) |
 | `--scraper-api-url` | — | Override the Scraper API base URL (testing only) |
+| `--scraper-api-cdp` | off | Route `--scraper-api`'s fetch through a 2Captcha Scraping Browser CDP session (their `cdpurl` field) instead of their own default pool — chains the Scraper API to 2Captcha's OWN Scraping Browser, not a caller-supplied `--cdp-endpoint` (that flag stays ignored in `--scraper-api` mode). Requires `--scraper-api`. This is what gives `--scraper-api` real captcha auto-solve for DataDome and exit-country pinning. **Wired and covered by `smoke_test.py`, not yet exercised against a real 2Captcha/g2.com session** — see `CHANGELOG.md`/`TESTING.md` |
+| `--scraper-api-country` | — | Exit country for `--scraper-api-cdp`'s Scraping Browser session, e.g. `us` (ignored without `--scraper-api-cdp`) |
+| `--scraper-api-profile-id` | — | Reuse a specific Scraping Browser profile id across runs for `--scraper-api-cdp`, instead of the default pool (ignored without `--scraper-api-cdp`) |
 
 ## Output contract
 

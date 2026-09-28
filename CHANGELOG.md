@@ -6,6 +6,42 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — 2026-09-28, `--scraper-api-cdp`: real captcha solving and country pinning for `--scraper-api`
+- `--scraper-api` on its own has two documented gaps: no captcha solving
+  at all (a solved token has no live page/DOM in that mode to be injected
+  into, so g2.com's DataDome challenge goes unsolved there), and no way to
+  pin the exit country/locale. `scraper_api_client.scrape_url()` already
+  had an untested `cdp_url` parameter for exactly this — 2Captcha's
+  Scraper API accepts a caller-supplied CDP session (their `cdpurl`
+  field) instead of using their own default browser pool — but nothing
+  in this codebase had ever called it with one.
+- `--scraper-api-cdp` (all three engines) fills that parameter with
+  `TwoCaptchaClient.scraping_browser_connection_url()`'s own output —
+  chaining the Scraper API to 2Captcha's OWN Scraping Browser product,
+  not a caller-supplied `--cdp-endpoint` (kept separate on purpose: an
+  arbitrary CDP session isn't known to support this field the way
+  2Captcha's own does, and `--scraper-api` already ignores
+  `--cdp-endpoint` for the same reason). This is what actually gives
+  `--scraper-api` real captcha auto-solve for DataDome (2Captcha's own
+  Scraping Browser solves it on their side of the session before the
+  HTML ever reaches this repo) and country pinning, via the new
+  `--scraper-api-country`/`--scraper-api-profile-id` flags (the latter
+  reuses a profile across runs the same way `scraping_browser_connection_
+  url()`'s own docstring already recommends for `--cdp-endpoint`).
+- `--scraper-api-cdp` requires `--scraper-api` (`EXIT_BAD_USAGE`
+  otherwise, not a silent no-op); `--scraper-api-country`/
+  `--scraper-api-profile-id` without `--scraper-api-cdp` log a warning
+  rather than doing nothing silently.
+- **Honesty note, same as every other live-testing gap in this repo**:
+  wired and covered by `smoke_test.py` (structural checks across all
+  three engines, plus a behavioral one that injects a fake Scraper API
+  response and confirms the built `cdpurl` — country, profile id — really
+  reaches `scrape_url()`, and that plain `--scraper-api` is unaffected
+  when the flag is absent). None of this has been exercised against a
+  real 2Captcha/g2.com session yet — see TESTING.md's "Scraper API"
+  section. This is a real, tested-as-wired fix, not a claim that captcha
+  solving or country pinning have been confirmed working live.
+
 ## [0.1.0] - 2026-09-27
 
 First tagged release. Three engines (Playwright primary, Selenium and
