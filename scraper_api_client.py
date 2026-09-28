@@ -28,16 +28,20 @@ separate host):
     confirmed live (2026-09-22) that it DOES fetch real pages, but also
     that it is NOT a bypass of a site's own bot-mitigation (the same
     interstitial a local Playwright browser hits shows up here too,
-    intermittently) and that it has no documented parameter to pin the
+    intermittently) and that, by itself, it has no captcha solving (no
+    local page/cookie-jar here for this module's `solve_and_wait`-based
+    solving to apply a result INTO) and no documented parameter to pin the
     exit country/locale. g2.com is behind DataDome (see `g2_parser.py`'s
     module docstring) — solvable via `captcha_solver.CaptchaType.
     DATADOME_SLIDER` when driving a real browser directly, but the Scraper
-    API here is a ONE-SHOT HTTP fetch on 2Captcha's own infrastructure
-    with no local page/cookie-jar for this module's `solve_and_wait`-based
-    solving to apply a result INTO — so treat this mode here as an
-    untested alternative fetch path, not a workaround for a DataDome wall.
-    See engine `run()`'s `--scraper-api` docstring/help text (added in a
-    later stage) for what this means for a caller.
+    API here is a ONE-SHOT HTTP fetch on 2Captcha's own infrastructure, so
+    that path doesn't apply to it. `scrape_url()`'s `cdp_url` parameter
+    (below), which every engine's `--scraper-api-cdp` now fills, is the
+    fix for both — chaining this product to 2Captcha's own Scraping
+    Browser instead of their default pool — but that combination is
+    wired, not yet exercised against a real 2Captcha/g2.com session
+    (TESTING.md). See engine `run()`'s `--scraper-api`/`--scraper-api-cdp`
+    docstring/help text for what this means for a caller.
 
 Never construct a competitor's API call from this module.
 """
@@ -269,14 +273,22 @@ class TwoCaptchaClient:
         params.waitFor must be an object`, despite the published docs
         showing it as a string; this client sends it as a real JSON object
         to match what the API actually accepts, not what its own docs
-        say. `cdp_url` (2Captcha's `cdpurl` field) lets a caller point
-        this fetch at a CDP session THEY already control instead of
-        2Captcha's own default browser pool — e.g. a `--cdp-endpoint`
-        Scraping Browser session, which does support country pinning,
-        unlike this endpoint on its own. Documented by 2Captcha but NOT
-        yet exercised live by this codebase — a real, but untested,
-        escape hatch for the locale problem described in the module
-        docstring, not a claim that it works."""
+        say. `cdp_url` (2Captcha's `cdpurl` field) lets a caller route
+        this fetch through a CDP session THEY already control instead of
+        2Captcha's own default browser pool. Every engine's
+        `--scraper-api-cdp` (added 2026-09-28) fills this with
+        `scraping_browser_connection_url()`'s own output — chaining this
+        product to 2Captcha's OWN Scraping Browser, not a caller-supplied
+        `--cdp-endpoint` (kept separate on purpose: an arbitrary CDP
+        session isn't known to support this field the way 2Captcha's own
+        does) — which is what gets this endpoint real captcha auto-solve
+        for DataDome (this endpoint alone has none) and the country
+        pinning described in the module docstring. Documented by
+        2Captcha; a real caller now exists (`--scraper-api-cdp`), but
+        neither this client nor any engine has exercised it against a
+        live 2Captcha/g2.com session yet — confirmed wired, not a
+        confirmed bypass or a confirmed working captcha solve
+        (TESTING.md)."""
         key = self._require_key()
         payload = {
             "task_type": "scrape",
