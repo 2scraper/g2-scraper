@@ -8,9 +8,13 @@ on:
 jobs:
   # A real local-first browser run against a real g2.com category.
   #
-  # A bare GitHub runner is consistently blocked by DataDome, so this job
-  # skips unless G2_PROXY is configured. Once configured it is strict: only
-  # EXIT_OK plus a complete three-page result passes. Treating blocked,
+  # A bare GitHub runner is consistently blocked by DataDome (one plain
+  # request to /categories/crm from a datacentre address on 2026-10-14: HTTP
+  # 403 with DataDome markers), so this job needs the G2_PROXY secret. With
+  # no secret it FAILS with an error naming it: a canary that skips green
+  # every day tests nothing and reads like a pass. Once configured it is
+  # strict: only EXIT_OK plus a complete three-page result with real rows
+  # passes. Treating blocked,
   # empty, or partial as green would hide exactly the parser/pagination
   # regressions a live canary exists to detect.
   #
@@ -28,12 +32,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip — no G2_PROXY secret configured
+      - name: Fail — no G2_PROXY secret configured
         if: env.HAS_PROXY != 'true'
         run: |
-          echo "::notice::Skipping the live pagination canary: no G2_PROXY secret is set. \
-          A bare datacentre runner is consistently blocked by G2/DataDome, so treating that \
-          result as a passing canary would hide parser and pagination regressions."
+          echo "::error::canary-live cannot test g2.com: the G2_PROXY repo secret is not set. \
+          A bare datacentre runner is refused by G2/DataDome, so without a (residential) \
+          proxy this canary would test nothing. Add G2_PROXY (http://login:password@host:port) \
+          under Settings > Secrets > Actions."
+          exit 1
 
       - uses: actions/setup-python@v5
         if: env.HAS_PROXY == 'true'
@@ -72,6 +78,20 @@ jobs:
           assert meta['status'] == 'complete', meta
           assert meta['pages_completed'] >= 3, meta
           assert meta['product_count'] >= 20, meta
+          rows = json.load(open('canary_out.json'))
+          assert len(rows) == meta['product_count'] >= 20, len(rows)
+          # Parser checks, not merchandising: every listing row must carry
+          # its identity, and the listing card's rating/review count must
+          # be read on nearly every row.
+          for col in ('sku', 'title', 'product_url', 'category'):
+              missing = [r.get('sku') for r in rows if not r.get(col)]
+              assert not missing, (col, missing[:5])
+          for col in ('rating_5', 'review_count'):
+              share = sum(1 for r in rows if r.get(col) is not None) / len(rows)
+              print(f'{col} non-null on {share:.0%} of rows')
+              assert share >= 0.8, (col, share)
+          pages = {r['sku'] for r in rows}
+          assert len(pages) == len(rows), 'duplicate sku in output'
           print(f\"canary: got {meta['product_count']} products in {meta['pages_completed']} pages\")
           "
 
@@ -87,10 +107,9 @@ jobs:
           retention-days: 14
 
   # Opt-in, mirroring the rest of the family's pattern: exercises the
-  # --cdp-endpoint (2Captcha Scraping Browser API) path when a repo secret
-  # is configured. Skips cleanly — not red — when it isn't (CLAUDE.md §11:
-  # a canary behind an optional secret is always a SKIP, never a hard
-  # failure). This is also the single most useful observation this repo can
+  # --cdp-endpoint (2Captcha Scraping Browser API) path, which needs the
+  # G2_CDP_ENDPOINT repo secret. Without it the job FAILS with an error
+  # naming the secret rather than skipping green. This is also the single most useful observation this repo can
   # make about g2.com that it has not made yet: whether the Scraping
   # Browser API's own device identity and exit get past DataDome where a
   # bare CI runner does not. Nothing here solves DataDome — the question is
@@ -102,13 +121,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip — no G2_CDP_ENDPOINT secret configured
+      - name: Fail — no G2_CDP_ENDPOINT secret configured
         if: env.HAS_CDP != 'true'
         run: |
-          echo "::notice::Skipping the Scraping Browser API run: no G2_CDP_ENDPOINT \
-          secret is set. This is optional — canary-live above covers the local browser path \
-          when G2_PROXY is configured. Set G2_CDP_ENDPOINT (and TWOCAPTCHA_KEY) \
-          as repo secrets to also turn this job on. This is a SKIP, not a pass or a fail."
+          echo "::error::canary-cdp cannot test g2.com: the G2_CDP_ENDPOINT repo secret is not set. \
+          Add a 2Captcha Scraping Browser endpoint \
+          (ws://{login}-zone-scraping_browser-country-us-pid-{profileId}:{password}@cb.2captcha.com:9222) \
+          under Settings > Secrets > Actions; TWOCAPTCHA_KEY is optional here."
+          exit 1
 
       - uses: actions/setup-python@v5
         if: env.HAS_CDP == 'true'
@@ -118,7 +138,7 @@ jobs:
         if: env.HAS_CDP == 'true'
 
       # Both secrets go through the ENVIRONMENT, never a command-line flag
-      # (CLAUDE.md §3: credentials never reach argv). env_config.py already
+      # (credentials never reach argv). env_config.py already
       # reads G2_CDP_ENDPOINT/TWOCAPTCHA_KEY unconditionally, so this is
       # correct with or without either secret set.
       - name: Run over the Scraping Browser API
@@ -147,6 +167,12 @@ jobs:
           assert meta['status'] == 'complete', meta
           assert meta['pages_completed'] >= 3, meta
           assert meta['product_count'] >= 20, meta
+          rows = json.load(open('canary_cdp_out.json'))
+          for col in ('sku', 'title', 'product_url', 'category'):
+              missing = [r.get('sku') for r in rows if not r.get(col)]
+              assert not missing, (col, missing[:5])
+          share = sum(1 for r in rows if r.get('rating_5') is not None) / len(rows)
+          assert share >= 0.8, ('rating_5', share)
           "
 
       - name: Upload artifacts on every non-skipped run

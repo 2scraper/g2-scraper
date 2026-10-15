@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """g2_parser.py — this IS the g2.com site knowledge, and the only file in
-this repo that carries any (CLAUDE.md §5/§7: the seven family-shared
+this repo that carries any (the seven family-shared
 modules beside it — `output_writer.py`, `proxy_pool.py`,
 `captcha_solver.py`, `fingerprint_client.py`, `scraper_api_client.py`,
 `diff_runs.py`, `env_config.py` — carry no site knowledge and were copied
@@ -14,7 +14,7 @@ This is the B2B-software-marketplace analog of shein-scraper's
 perplexity-scraper's `page_parser.py`.
 
 ===========================================================================
-READ THIS BEFORE TRUSTING ANYTHING BELOW (CLAUDE.md §15: an unverified
+READ THIS BEFORE TRUSTING ANYTHING BELOW (an unverified
 claim gets stated plainly, not glossed over)
 ===========================================================================
 
@@ -29,7 +29,7 @@ never to a crash or to a wrong number.
 **CONFIRMED — site architecture.** g2.com is server-rendered (Rails/PJAX),
 not a client-side SPA. Product data is in the delivered HTML; nothing has
 to hydrate before it is readable. The practical consequence for whoever
-writes the engine scripts next: `READINESS_WAIT_MS` (CLAUDE.md §5) can be
+writes the engine scripts next: `READINESS_WAIT_MS` can be
 materially SHORTER here than on an SPA family member — the only thing
 worth waiting on is DataDome's own asynchronous checks, not content.
 
@@ -41,7 +41,7 @@ contains the string `"datadome"`, so DETECTION works with no extra wiring.
 This module originally shipped the claim above — no `CaptchaType` member
 for DataDome, on the theory that no 2Captcha task type existed for it at
 all, the same bucket as PerimeterX on skyscanner.com. That claim was
-WRONG: Roman, from 2Captcha's own team, pointed at
+WRONG: 2Captcha's own documentation describes
 https://2captcha.com/api-docs/datadome-slider-captcha — a dedicated
 `DataDomeSliderTask` for exactly this vendor's own interstitial slider
 challenge. `captcha_solver.CaptchaType.DATADOME_SLIDER` now exists and is
@@ -198,9 +198,10 @@ and this module ships all three:
 `captcha_solver.solve_when_blocked()` has no default for this argument on
 purpose. An engine's `_maybe_solve_captcha()` (or equivalent) must accept
 an override and every call site must pass one of the three above.
-DataDome is unsolvable regardless, so on g2.com the practical cost of
-getting this wrong is a false warning rather than wasted spend — but the
-habit is what keeps the family from re-shipping the expensive version.
+On g2.com only a real DataDome slider iframe is ever billable (the
+always-present DataDome tag alone is not), so getting this wrong costs a
+false warning far more often than a purchase — but the habit is what keeps
+the family from re-shipping the expensive version.
 
 ===========================================================================
 LEFT FOR THE NEXT STAGE (deliberate gaps, not oversights)
@@ -240,7 +241,7 @@ log = logging.getLogger("g2_parser")
 
 # `Product` is re-exported here so an engine can import the row model and
 # the parser from one place, exactly as shein_parser.py's callers do. It is
-# DEFINED in output_writer.py (CLAUDE.md §9: the output contract, including
+# DEFINED in output_writer.py (the output contract, including
 # each repo's site-specific tail, lives in that module) — see its docstring
 # for what every g2.com-specific field means and which page it comes from.
 __all__ = [
@@ -261,7 +262,7 @@ __all__ = [
 BASE_URL = "https://www.g2.com"
 SOURCE = "g2.com"
 
-# CLAUDE.md §5: the site's own threshold for "did this page actually render
+# the site's own threshold for "did this page actually render
 # results". A single stray card-shaped element must not read as a rendered
 # listing — mirrors shein-scraper's / stockx-scraper's own MIN_CARD_MATCHES.
 MIN_CARD_MATCHES = 2
@@ -645,7 +646,7 @@ def parse_category_listing(
     `currency` / `price_source` (g2.com has no price on a listing card).
     An engine that also fetches the detail or pricing page merges those in.
 
-    Per CLAUDE.md §6, one malformed card degrades to a skipped card, never
+    One malformed card degrades to a skipped card, never
     a lost page: every card is parsed inside its own try/except so a single
     bad `data-event-options` blob or missing link cannot discard the other
     nineteen rows the page did produce.
@@ -909,7 +910,7 @@ def parse_product_page(html: str, url: str) -> Optional[Product]:
             # `sku` (the slug — which is exactly why `sku` is the slug).
             product_slug=slug,
         )
-    except Exception:  # noqa: BLE001 — CLAUDE.md §6: never crash a run on one page
+    except Exception:  # noqa: BLE001 — never crash a run on one page
         log.exception("parse_product_page raised — treating this page as unparseable")
         return None
 
@@ -993,8 +994,7 @@ def parse_pricing_page(html: str, url: str = "") -> List[PricingTier]:
     product. It returns `[]` — never raises, never partially-credible
     garbage — when the page doesn't match, and a caller should treat an
     empty list as "no pricing could be read", not as "this product is
-    free". `# TODO(readme):` the README must state this ranking plainly
-    (CLAUDE.md §15).
+    free". `# TODO(readme):` the README must state this ranking plainly.
 
     `url` is accepted for symmetry with the other parsers and for log
     context; nothing is derived from it.
@@ -1031,7 +1031,7 @@ def parse_pricing_page(html: str, url: str = "") -> List[PricingTier]:
             log.info("pricing page yielded no recognisable tier lines%s",
                      f" ({url})" if url else "")
         return tiers
-    except Exception:  # noqa: BLE001 — CLAUDE.md §6: degrade, never crash
+    except Exception:  # noqa: BLE001 — degrade, never crash
         log.exception("parse_pricing_page raised — returning no tiers")
         return []
 

@@ -6,8 +6,8 @@ g2.com instead of the live site. `smoke_test.py` proves the architecture
 offline with no browser at all; this proves the pipeline actually moves
 data through a real browser without needing network access to g2.com
 itself — the gap `smoke_test.py`'s own module docstring names as still
-open, and the ONE thing CLAUDE.md's testing checklist (§10) explicitly asks
-for beyond the offline suite.
+open, and the one thing the family's testing rules explicitly ask for beyond
+the offline suite.
 
 **Added 2026-09-22, after this repo's first-ever live run** (previously
 blocked by this project's build environment's egress policy). That first

@@ -13,10 +13,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_ALLOWLIST = {
-    ".env.example",
-    "smoke_test.py",  # deliberate credential-shaped masking fixtures
-    ".github/ci_checks.py",  # contains the detector patterns themselves
+# Files exempt from SPECIFIC rules only, never wholesale. smoke_test.py
+# carries deliberate credential-shaped masking fixtures (user:pass URLs,
+# key= assignments) but must still be scanned for everything else, so a
+# pasted real key in it is caught like anywhere else.
+RULE_EXEMPTIONS = {
+    ".env.example": {"credentialed_url"},
+    "smoke_test.py": {"credentialed_url", "secret_assignment", "env_assignment"},
+    ".github/ci_checks.py": {"credentialed_url", "secret_assignment", "env_assignment"},
 }
 
 TOKEN_RULES = {
@@ -26,11 +30,26 @@ TOKEN_RULES = {
     "openai_key": re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
 }
 URL_CREDENTIALS = re.compile(r"\b(?:https?|wss?)://([^\s/@:]+):([^\s/@]+)@", re.I)
+_SECRET_NAMES = r"(?:api[_-]?key|TWOCAPTCHA_KEY|G2_PROXY|G2_CDP_ENDPOINT|CLAUDE_CODE_OAUTH_TOKEN)"
+# A quoted value after a secret-shaped name. Every quote may be preceded by a
+# backslash: inside a JSON-string fixture the file holds `\"apiKey\": \"...\"`,
+# never `"apiKey": "..."`, and a bare-quote pattern matched nothing there.
 SECRET_ASSIGNMENT = re.compile(
-    r"\b(?:api[_-]?key|TWOCAPTCHA_KEY|G2_PROXY|G2_CDP_ENDPOINT|CLAUDE_CODE_OAUTH_TOKEN)"
-    r"\s*(?:=|:)\s*['\"]([^'\"]{8,})['\"]",
+    r"\b" + _SECRET_NAMES + r"\\?['\"]?\s*(?:=|:)\s*\\?['\"]([^'\"\\]{8,})\\?['\"]",
     re.I,
 )
+# An UNQUOTED `.env`-style line (`TWOCAPTCHA_KEY=abc...`), which is exactly
+# what a `.env.bak` holds. Anchored to the start of a line and to upper-case
+# names so ordinary code (`api_key = args.key`) does not match.
+ENV_ASSIGNMENT = re.compile(
+    r"^\s*(?:export\s+)?(?:TWOCAPTCHA_KEY|G2_PROXY|G2_CDP_ENDPOINT|CLAUDE_CODE_OAUTH_TOKEN|[A-Z0-9_]*API_KEY)"
+    r"\s*=\s*([^\s#'\"]{8,})"
+)
+# A 2Captcha key is 32 lower-case hex characters. Nothing in this repo needs
+# a bare 32-hex string, so there is no allowlist for the shape: a site id of
+# that shape would be removed from the fixture rather than exempted.
+_IDENTIFIER_VALUE = re.compile(r"^[a-z_]+$")
+TWOCAPTCHA_KEY_SHAPE = re.compile(r"(?<![0-9A-Fa-f])[0-9a-fA-F]{32}(?![0-9A-Fa-f])")
 PLACEHOLDER_WORDS = (
     "user", "username", "login", "pass", "password", "example", "fake",
     "secret", "redacted", "changeme", "proxy-user", "proxy-pass", "your",
@@ -52,29 +71,50 @@ def _words(token: str) -> set[str]:
 _PLACEHOLDER_WORD_SET = {w for phrase in PLACEHOLDER_WORDS for w in _words(phrase)}
 
 
-# Directories that are never this repo's own source, however they got onto
-# disk — a virtualenv (any of them: CI's engine-smoke job makes one PER
-# engine, .venv-playwright/.venv-selenium/.venv-puppeteer, not just
-# `.venv`) or a node_modules tree carries a huge amount of third-party
-# test/fixture/license text that legitimately contains credential-shaped
-# strings (an SPDX license list, a URL-parsing test's own sample
-# credentialed URLs). `.gitignore` is supposed to keep these out of
-# `git ls-files --others --exclude-standard` already, but relying on that
-# alone is exactly the "two independent checks for the same thing WILL
-# drift apart" trap CLAUDE.md §17 warns about for placeholder detection —
-# a renamed/added venv directory silently reopens this the same way
-# `.venv-<engine>` did the first time. Filtering by name here too means a
-# stale or incomplete .gitignore degrades to redundant, not broken.
+# Directories that are never this repo's own source: a node_modules tree, a
+# cache, and ANY virtualenv. A virtualenv is recognised by the file that
+# defines one, `pyvenv.cfg`, never by its name alone: the README tells people
+# to make one venv per engine, and a venv called anything not on a name list
+# was walked into, where pip's vendored code is full of credential-shaped
+# strings. The name list stays as a cheap first filter.
 _NOT_SOURCE_DIR = re.compile(r"(^|/)(\.venv[^/]*|venv|env|node_modules|__pycache__|\.git)(/|$)")
 
 
-def repository_files() -> list[str]:
+def _inside_virtualenv(relative: str) -> bool:
+    parts = Path(relative).parts[:-1]
+    for i in range(1, len(parts) + 1):
+        if (ROOT.joinpath(*parts[:i]) / "pyvenv.cfg").is_file():
+            return True
+    return False
+
+
+def _git_paths(*args: str) -> list[str]:
     result = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        cwd=ROOT, check=True, capture_output=True,
+        ["git", "ls-files", "-z", *args], cwd=ROOT, check=True, capture_output=True,
     )
-    paths = [p.decode("utf-8", "surrogateescape") for p in result.stdout.split(b"\0") if p]
-    return [p for p in paths if not _NOT_SOURCE_DIR.search(p)]
+    return [p.decode("utf-8", "surrogateescape") for p in result.stdout.split(b"\0") if p]
+
+
+def repository_files() -> list[str]:
+    """Tracked files, untracked non-ignored files, and IGNORED `.env.*`
+    copies (`.env.bak`, `.env.local`, ...). The last group is ignored on
+    purpose and is still exactly where a live key sits one rename away from
+    a commit, so it is read too. `.env` itself is the user's working
+    configuration and is not scanned. All paths are relative to the
+    repository, so a clone under /tmp, build/ or out/ scans the same set."""
+    paths = _git_paths("--cached", "--others", "--exclude-standard")
+    backups = [
+        p for p in _git_paths("--others", "--ignored", "--exclude-standard")
+        if Path(p).name.startswith(".env.") and Path(p).name != ".env.example"
+    ]
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in paths + backups:
+        if p in seen or _NOT_SOURCE_DIR.search(p) or _inside_virtualenv(p):
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
 
 
 def is_placeholder(user: str, password: str) -> bool:
@@ -100,38 +140,58 @@ def is_placeholder(user: str, password: str) -> bool:
     return bool((_words(user) | _words(password)) & _PLACEHOLDER_WORD_SET)
 
 
-def scan() -> list[tuple[str, int, str]]:
+def scan() -> tuple[list[tuple[str, int, str]], int]:
+    """Returns (findings, number of files actually read)."""
     findings: list[tuple[str, int, str]] = []
+    read = 0
     for relative in repository_files():
-        if relative in FIXTURE_ALLOWLIST:
-            continue
+        exempt = RULE_EXEMPTIONS.get(relative, set())
         path = ROOT / relative
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+        read += 1
         for line_no, line in enumerate(text.splitlines(), 1):
             for rule, pattern in TOKEN_RULES.items():
-                if pattern.search(line):
+                if rule not in exempt and pattern.search(line):
                     findings.append((relative, line_no, rule))
-            for match in URL_CREDENTIALS.finditer(line):
-                if not is_placeholder(match.group(1), match.group(2)):
-                    findings.append((relative, line_no, "credentialed_url"))
-            for match in SECRET_ASSIGNMENT.finditer(line):
-                value = match.group(1)
-                if not is_placeholder(value, value):
-                    findings.append((relative, line_no, "secret_assignment"))
-    return findings
+            if "credentialed_url" not in exempt:
+                for match in URL_CREDENTIALS.finditer(line):
+                    if not is_placeholder(match.group(1), match.group(2)):
+                        findings.append((relative, line_no, "credentialed_url"))
+            if "secret_assignment" not in exempt:
+                for match in SECRET_ASSIGNMENT.finditer(line):
+                    value = match.group(1)
+                    # A bare lower-case identifier with no digit is a NAME
+                    # (env_config's `"TWOCAPTCHA_KEY": "twocaptcha_key"`
+                    # maps a variable to an argparse destination), not a key.
+                    if _IDENTIFIER_VALUE.match(value):
+                        continue
+                    if not is_placeholder(value, value):
+                        findings.append((relative, line_no, "secret_assignment"))
+            if "env_assignment" not in exempt:
+                for match in ENV_ASSIGNMENT.finditer(line):
+                    value = match.group(1)
+                    if not is_placeholder(value, value):
+                        findings.append((relative, line_no, "env_assignment"))
+            if "twocaptcha_key_shape" not in exempt and TWOCAPTCHA_KEY_SHAPE.search(line):
+                findings.append((relative, line_no, "twocaptcha_key_shape"))
+    return findings, read
 
 
 def main() -> int:
-    findings = scan()
+    findings, read = scan()
+    if read == 0:
+        # A scan that read nothing would otherwise print "passed".
+        print("credential scan failed: no files were scanned", file=sys.stderr)
+        return 1
     if findings:
         for path, line, rule in findings:
             print(f"{path}:{line}: possible committed credential ({rule})")
         print("credential scan failed", file=sys.stderr)
         return 1
-    print("credential scan passed")
+    print(f"credential scan passed ({read} files)")
     return 0
 
 

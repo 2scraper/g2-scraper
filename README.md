@@ -134,7 +134,7 @@ counted as one toggle).
 | `--headless` / `--headful` | headless | |
 | `--cdp-endpoint` | — | Connect to a remote CDP session instead of launching locally (or `G2_CDP_ENDPOINT`) |
 | `--fingerprint` | off | Fetch and apply a 2Captcha Fingerprint API profile (ignored with `--cdp-endpoint`) |
-| `--fp-tags` | — | Fingerprint filter, e.g. `Windows,Chrome` |
+| `--fp-tags` | — | Fingerprint filter: one OS-family tag, e.g. `Windows` |
 | `--fp-country` | — | Fingerprint filter, e.g. `us` |
 
 **Proxies**
@@ -157,7 +157,7 @@ counted as one toggle).
 | `--scraper-api` | off | Fetch via 2Captcha's browserless Scraper API instead of launching any browser. Requires a key. `--max-pages`/`--page-delay`/`--proxy`/`--cdp-endpoint`/`--fingerprint` are ignored in this mode — a single static fetch has no pagination loop and brings its own exit IP. By itself this mode has no captcha solving and no documented way to pin the exit country/locale — see `--scraper-api-cdp` |
 | `--scraper-api-timeout` | `60` | Seconds 2Captcha itself waits for the page (1-120) |
 | `--scraper-api-url` | — | Override the Scraper API base URL (testing only) |
-| `--scraper-api-cdp` | off | Route `--scraper-api`'s fetch through a 2Captcha Scraping Browser CDP session (their `cdpurl` field) instead of their own default pool — chains the Scraper API to 2Captcha's OWN Scraping Browser, not a caller-supplied `--cdp-endpoint` (that flag stays ignored in `--scraper-api` mode). Requires `--scraper-api`. This is what gives `--scraper-api` real captcha auto-solve for DataDome and exit-country pinning. **Wired and covered by `smoke_test.py`, not yet exercised against a real 2Captcha/g2.com session** — see `CHANGELOG.md`/`TESTING.md` |
+| `--scraper-api-cdp` | off | Route `--scraper-api`'s fetch through a 2Captcha Scraping Browser CDP session (their `cdpurl` field) instead of their own default pool — chains the Scraper API to 2Captcha's OWN Scraping Browser, not a caller-supplied `--cdp-endpoint` (that flag stays ignored in `--scraper-api` mode). Requires `--scraper-api`. Intended to give `--scraper-api` the Scraping Browser's own captcha auto-solve and exit-country pinning; whether that auto-solve clears g2.com's DataDome challenge is unverified. **Wired and covered by `smoke_test.py`, not yet exercised against a real 2Captcha/g2.com session** — see `CHANGELOG.md`/`TESTING.md` |
 | `--scraper-api-country` | — | Exit country for `--scraper-api-cdp`'s Scraping Browser session, e.g. `us` (ignored without `--scraper-api-cdp`) |
 | `--scraper-api-profile-id` | — | Reuse a specific Scraping Browser profile id across runs for `--scraper-api-cdp`, instead of the default pool (ignored without `--scraper-api-cdp`) |
 
@@ -191,9 +191,17 @@ product_slug, vendor_id, category_id, product_type
   cache/render timing), so this records which one a row's number came
   from.
 
-**Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked ·
-`4` zero products (nothing written) · `5` remote API error · `6` partial.
-Every completed/partial run writes a `<out>.meta.json` sidecar with
+**Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked
+(nothing gathered) · `4` zero products (nothing written; also a target that
+answers HTTP 404, which is not retried) · `5` the content was never obtained:
+a remote API error, a navigation failure, or a served page that parsed to
+nothing (`parser_found_nothing`, e.g. a product page with no product data) ·
+`6` partial: rows were gathered and then a page failed, was blocked or hit a
+remote error. CSV output prefixes formula-shaped text cells (`=`, `+`, `-`,
+`@`, tab, CR, LF) with `'` so a spreadsheet does not execute them; JSON keeps
+the site's text unchanged, and the sidecar's `csv_cells_escaped` says how
+many cells differ. Output files are written atomically (a failed write
+leaves the previous file intact). Every completed/partial run writes a `<out>.meta.json` sidecar with
 `status`, `stop_reason`, `engine`, `url`, `pages_requested`,
 `pages_completed`, `failed_pages`, `product_count`, `price_confirmed_pct`
 and timestamps. A failed/empty/blocked/remote-API-error run writes no

@@ -3,7 +3,7 @@
 and run metadata. Carries (almost) no site knowledge: everything here is
 part of the family's shared output CONTRACT — diverging from it needs a
 written reason, not a per-site tweak. Ported near-verbatim from
-shein-scraper's output_writer.py (CLAUDE.md §7: porting starts by copying
+shein-scraper's output_writer.py (porting starts by copying
 the family-shared modules from the newest sibling and diffing what
 changed on purpose) — in turn ported from lidl-scraper's, in turn from
 skyscanner-scraper's, in turn from stockx-scraper's original (commit
@@ -17,12 +17,15 @@ family-common fields) differs per repo.
 """
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
+import os
+import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field, fields
-from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 # --------------------------------------------------------------------------- #
 # Exit codes — identical across playwright_scraper / selenium_scraper /
@@ -54,7 +57,7 @@ STATUS_BY_EXIT = {
 # --------------------------------------------------------------------------- #
 @dataclass
 class Product:
-    """Family-common fields first, in the exact order CLAUDE.md §9 fixes
+    """Family-common fields first, in the exact order the family output contract fixes
     (same order in JSON and CSV across every 2scraper repo — stockx-scraper,
     skyscanner-scraper, lidl-scraper, perplexity-scraper, shein-scraper, and
     this one); g2.com-specific (B2B software review marketplace) fields at
@@ -125,7 +128,7 @@ class Product:
     source column is here so nobody has to relitigate that.
     """
 
-    # --- family-common (CLAUDE.md §9 — exact order, never reordered) ---
+    # --- family-common (exact order, never reordered) ---
     sku: Optional[str]
     source: str
     category: Optional[str]
@@ -190,26 +193,121 @@ def merge_pages(pages: Sequence[Sequence[Product]]) -> List[Product]:
 # --------------------------------------------------------------------------- #
 # Writers
 # --------------------------------------------------------------------------- #
+@contextlib.contextmanager
+def _atomic(path: str, newline: Optional[str] = None):
+    """Write to a temporary file beside `path`, then rename over it.
+
+    `open(path, "w")` truncates before a single byte is written, so a
+    crash, a kill, a full disk or a Ctrl-C halfway through `json.dump`
+    leaves a SHORTER file where a complete one was -- the previous good run
+    destroyed by the attempt to replace it. Measured here before this
+    change: a 496-byte good output came back as a 10-byte fragment after a
+    write failure injected part-way through `json.dump`.
+
+    * The temp file goes in the target's OWN directory: `os.replace` is
+      atomic only within one filesystem.
+    * `fsync` before the rename makes the bytes durable, not just visible.
+    * `newline` is passed through because the csv module needs
+      `newline=""`.
+    * Mode: `NamedTemporaryFile` creates at 0600 and `os.replace` keeps
+      that, so the final mode is set explicitly -- an existing target keeps
+      its own mode (someone may have tightened it on purpose), and a new
+      one gets exactly what `open()` would have given it, `0o666 & ~umask`.
+      Never a flat 0644, which narrows 0664 under umask 002.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline=newline, dir=directory,
+        prefix=os.path.basename(path) + ".", suffix=".tmp", delete=False)
+    try:
+        with handle:
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            mode = os.stat(path).st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        os.chmod(handle.name, mode)
+        os.replace(handle.name, path)
+    except BaseException:
+        # Including KeyboardInterrupt: an interrupted run must not leave
+        # `out.json.ab12cd.tmp` behind beside the good file.
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+        raise
+
+
+# A spreadsheet treats a cell beginning with one of these as a FORMULA
+# rather than as text, and every string in these rows was written by
+# whoever listed the product on g2.com (a product name, a category name).
+# The tab and the two newlines are here because some readers strip a
+# leading one and then execute whatever followed it.
+CSV_FORMULA_LEADS = ("=", "+", "-", "@", "\t", "\r", "\n")
+# Excel, Google Sheets and LibreOffice read a leading apostrophe as "the
+# rest of this cell is text". A consumer parsing the file with the `csv`
+# module DOES see it, which is why the count goes into the sidecar.
+CSV_FORMULA_ESCAPE = "'"
+LIST_CSV_SEPARATOR = " | "
+
+
+def _csv_value(v: Any) -> Any:
+    if isinstance(v, (list, tuple)):
+        return LIST_CSV_SEPARATOR.join(str(x) for x in v)
+    if isinstance(v, dict):
+        return json.dumps(v, ensure_ascii=False, sort_keys=True)
+    return v
+
+
+def _csv_escape(v: Any) -> Tuple[Any, bool]:
+    """Neutralise a formula-shaped cell. Returns (value, was_escaped).
+
+    Only STRINGS are touched: escaping a number would turn `-5` into text
+    and break every sum over the column. CSV only -- the JSON output keeps
+    the site's bytes exactly as served, and `csv_cells_escaped` in the
+    sidecar declares the difference between the two files.
+    """
+    if isinstance(v, str) and v.startswith(CSV_FORMULA_LEADS):
+        return CSV_FORMULA_ESCAPE + v, True
+    return v, False
+
+
 def write_json(products: Sequence[Product], out_path: str) -> None:
-    with open(out_path, "w", encoding="utf-8") as f:
+    with _atomic(out_path) as f:
         json.dump([asdict(p) for p in products], f, ensure_ascii=False, indent=2)
 
 
-def write_csv(products: Sequence[Product], out_path: str) -> None:
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
+def write_csv(products: Sequence[Product], out_path: str) -> int:
+    """Returns how many cells were formula-escaped."""
+    escaped = 0
+    with _atomic(out_path, newline="") as f:
         writer = csv.DictWriter(f, fieldnames=PRODUCT_FIELD_NAMES)
-        writer.writeheader()  # written even for zero rows — a consumer reads
+        writer.writeheader()  # written even for zero rows -- a consumer reads
         for p in products:    # an empty table, not a zero-byte file.
-            writer.writerow(asdict(p))
+            row = {}
+            for k, v in asdict(p).items():
+                # AFTER the list/dict serialiser: the joined cell is text
+                # too, and can start with a formula character.
+                value, was_escaped = _csv_escape(_csv_value(v))
+                escaped += was_escaped
+                row[k] = value
+            writer.writerow(row)
+    return escaped
 
 
-def write_output(products: Sequence[Product], out_path: str, fmt: str) -> None:
+def write_output(products: Sequence[Product], out_path: str, fmt: str) -> int:
+    """Writes the rows; returns the number of formula-escaped CSV cells
+    (always 0 for JSON)."""
     if fmt == "json":
         write_json(products, out_path)
-    elif fmt == "csv":
-        write_csv(products, out_path)
-    else:
-        raise ValueError(f"Unsupported format: {fmt!r} (expected 'json' or 'csv')")
+        return 0
+    if fmt == "csv":
+        return write_csv(products, out_path)
+    raise ValueError(f"Unsupported format: {fmt!r} (expected 'json' or 'csv')")
 
 
 # --------------------------------------------------------------------------- #
@@ -250,9 +348,8 @@ def write_meta(
     }
     if extra:
         meta.update(extra)
-    Path(meta_path_for(out_path)).write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    with _atomic(meta_path_for(out_path)) as f:
+        f.write(json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 # --------------------------------------------------------------------------- #
@@ -277,65 +374,83 @@ def finish_run(
     started_at: float,
     price_confirmed_pct: Optional[float] = None,
     extra_meta: Optional[dict] = None,
+    stop_reason: Optional[str] = None,
 ) -> int:
     """Decide status/exit code, write output + sidecar (or neither), return
     the process exit code. NEVER writes a sidecar for a failed run, and
     NEVER overwrites a previous good output with an empty one unless the
-    caller explicitly passed --allow-empty."""
+    caller explicitly passed --allow-empty.
+
+    The mapping, decided once here so the three engines cannot drift:
+
+      no rows   remote_api_error         -> remote_api_error, exit 5
+                blocked                  -> blocked,          exit 3
+                failed_pages, no block   -> parser_found_nothing, exit 5
+                                            (a page WAS served or attempted
+                                            and nothing usable came out of it:
+                                            a parser exception, an unreadable
+                                            document, a product page with no
+                                            product data. Reporting that as
+                                            "empty" would send the reader to
+                                            check the URL instead of the
+                                            parser.)
+                otherwise                -> empty,            exit 4
+      rows      any of the above failed  -> partial,          exit 6
+                (blocked or a remote error AFTER rows were gathered is
+                partial data, not a block: the rows are written and the
+                sidecar says which pages are missing)
+                otherwise                -> complete,         exit 0
+
+    `--allow-empty` controls only whether a zero-row result gets WRITTEN;
+    it never changes the status.
+    """
     failed_pages = failed_pages or []
-    partial = bool(failed_pages) and pages_completed > 0
     zero_products = len(products) == 0
 
-    # Outcome precedence — decided ONCE, independent of --allow-empty, and
-    # identical across every 2scraper family member (CLAUDE.md §9):
-    # remote_api_error > blocked > zero_products > partial > complete.
-    # `--allow-empty` controls only whether a zero-product result gets
-    # WRITTEN as a file (below); it must never launder a blocked or
-    # remote-API-error run into a "complete" status just because the
-    # caller also passed --allow-empty, and it must never do so just
-    # because SOME batches did return results while the run was, in fact,
-    # blocked partway through.
-    #
-    # zero_products is checked before partial deliberately: a run that
-    # collected no products at all is reported as "empty", even if the
-    # reason was a parser exception on its only page rather than a
-    # genuinely empty category — `failed_pages` still records that page,
-    # and the engine's own log line for it is the diagnostic detail, same
-    # as this function already treats zero_products for blocked/
-    # remote_api_error runs. (A prior draft of this function swapped this
-    # order and cited a sibling repo, stockx-scraper commit 00b5570, as
-    # precedent for doing so; that repo's actual finish_run() checks
-    # zero_products before partial, same as here — the citation did not
-    # hold up, so this stays in line with CLAUDE.md §9 and every sibling.)
-    if remote_api_error:
-        status, exit_code = "remote_api_error", EXIT_REMOTE_API_ERROR
-    elif blocked:
-        status, exit_code = "blocked", EXIT_BLOCKED
-    elif zero_products:
-        status, exit_code = "empty", EXIT_ZERO_PRODUCTS
-    elif partial:
+    if zero_products:
+        if remote_api_error:
+            status, exit_code = "remote_api_error", EXIT_REMOTE_API_ERROR
+        elif blocked:
+            status, exit_code = "blocked", EXIT_BLOCKED
+        elif failed_pages:
+            status, exit_code = "parser_found_nothing", EXIT_REMOTE_API_ERROR
+        else:
+            status, exit_code = "empty", EXIT_ZERO_PRODUCTS
+        derived_reason = status
+    elif remote_api_error or blocked or failed_pages:
         status, exit_code = "partial", EXIT_PARTIAL
+        derived_reason = (
+            "remote_api_error" if remote_api_error
+            else "blocked" if blocked
+            else "pages_failed"
+        )
     else:
         status, exit_code = "complete", EXIT_OK
+        derived_reason = "complete"
+    stop_reason = stop_reason or derived_reason
 
     # The "never overwrite good output with empty" rule: a zero-product
-    # outcome (whatever its status above — blocked/remote_api_error/empty
-    # all zero out `products`) writes NEITHER file NOR sidecar unless the
-    # caller explicitly opted in with --allow-empty. NEVER write a sidecar
-    # in the not-written case — a PREVIOUS good <out>.json is left in
-    # place untouched, and a stale failure sidecar sitting right beside it
-    # would contradict that good data rather than describe it. The
-    # engine's own logs carry the diagnostic detail — that's what a
-    # failed run's output is FOR, not this file.
+    # outcome writes NEITHER file NOR sidecar unless the caller explicitly
+    # opted in with --allow-empty. A previous good <out>.json is left in
+    # place untouched, and a stale failure sidecar beside it would
+    # contradict that good data.
     if zero_products and not allow_empty:
         return exit_code
 
-    write_output(products, out_path, fmt)
+    escaped = write_output(products, out_path, fmt)
+    # Housekeeping goes UNDER the caller's extra: a key collision must never
+    # silently drop site data the caller chose to record.
+    meta_extra = {"csv_cells_escaped": escaped} if fmt == "csv" else {}
+    meta_extra.update(extra_meta or {})
     write_meta(
-        out_path, status=status, stop_reason=status, engine=engine, url=url,
+        out_path, status=status, stop_reason=stop_reason, engine=engine, url=url,
         pages_requested=pages_requested, pages_completed=pages_completed,
         failed_pages=failed_pages, product_count=len(products),
         price_confirmed_pct=price_confirmed_pct, started_at=started_at,
-        extra=extra_meta,
+        extra=meta_extra,
     )
+    if escaped:
+        print(f"note: {escaped} CSV cell(s) began with a formula character and were "
+              f"prefixed with {CSV_FORMULA_ESCAPE!r}; the JSON output is unchanged "
+              f"(csv_cells_escaped in the sidecar).", file=sys.stderr)
     return exit_code

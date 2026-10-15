@@ -31,12 +31,12 @@ safe default here: every call site passes its own.
 `dd.g2.com/js/`, confirmed live) IS solvable — corrected 2026-09-22.**
 The original version of this module claimed "no automated solve path at
 all," treating DataDome the same as PerimeterX. That was wrong, caught by
-Roman (2Captcha's own team) pointing at
+a 2Captcha team member pointing at
 https://2captcha.com/api-docs/datadome-slider-captcha: **2Captcha ships a
 dedicated `DataDomeSliderTask`** for exactly this vendor's own interstitial
 slider challenge. `CaptchaType.DATADOME_SLIDER` below maps to it. Two real
 constraints from that same page, both enforced in `_task_payload()` rather
-than documented-and-ignored (CLAUDE.md §17's standing lesson):
+than documented-and-ignored (a standing lesson in this family):
 
   - **No proxyless variant exists.** `proxyType`/`proxyAddress`/
     `proxyPort` are required fields, not optional ones — DataDome
@@ -57,7 +57,7 @@ than documented-and-ignored (CLAUDE.md §17's standing lesson):
     engine still owns actually calling its own driver, same split as
     everywhere else in this module.
 
-**Confirmed against a real, live g2.com capture as of 2026-09-22** — Roman's
+**Confirmed against a real, live g2.com capture as of 2026-09-22** — the
 first-ever real run (`--cdp-endpoint` + a real 2Captcha key, category page,
 `crm`) DID hit a visible DataDome challenge, not just the silent always-on
 `window.DataDomeJsTag`/cookie device-check. The scrubbed raw capture is at
@@ -108,8 +108,8 @@ expected on most page loads — DataDome's silent device-check running and
 not challenging the request) still has nothing to solve —
 `identify_unsupported_vendor()` and the `"unsupported_vendor"` action
 (restored from skyscanner-scraper, which hit the identical situation with
-PerimeterX, which genuinely has no 2Captcha task type at all) still fire
-for THAT case.
+PerimeterX, a challenge this repo does not implement) still fire for THAT
+case.
 
 No page-execution primitive (page.evaluate / execute_script) crosses this
 module's boundary: `build_injection_script()` below only BUILDS a plain
@@ -122,7 +122,7 @@ never the act of running JS against a real page.
 **Until 2026-09-21, no engine in this family actually injected a solved
 token back into a locally-launched (non `--cdp-endpoint`) browser at
 all** — every engine's own `_maybe_solve_captcha` only logged "solved", a
-real gap Roman asked about directly after GeeTest support was added
+real gap raised directly after GeeTest support was added
 without it. `build_injection_script()` closes that gap using each widget
 type's OWN standard, publicly-documented client-integration convention
 (a hidden `g-recaptcha-response` textarea for reCAPTCHA v2, a
@@ -165,7 +165,7 @@ was NOT in that confirmed list, though it may be covered and simply
 wasn't seen in that one capture.
 
 **DataDome specifically now has one real, live `--cdp-endpoint` data
-point (Roman, 2026-09-22, g2.com — see the module docstring's opening
+point (2026-09-22, g2.com — see the module docstring's opening
 section for the full capture): `Captcha.setAutoSolve` armed without error
 and never fired `Captcha.detected` across three retries against a real,
 present DataDome interstitial, and that capture's own extension-injected
@@ -288,7 +288,7 @@ _GEETEST_V3_RE = re.compile(
 # one. `/captcha/` is 2Captcha's own published integration-doc shape
 # (https://2captcha.com/api-docs/datadome-slider-captcha and their "how to
 # bypass DataDome captcha" guide); `/interstitial/` is what g2.com itself
-# was actually caught serving (Roman, 2026-09-22, first-ever real
+# was actually caught serving (2026-09-22, first-ever real
 # `--cdp-endpoint` + real key run against live g2.com — raw capture
 # scrubbed of its single-use tokens at
 # tests/fixtures/g2_datadome_interstitial.html, title="DataDome Device
@@ -368,17 +368,18 @@ def detect_from_html(html: str, extra_markers: Sequence[str] = ()) -> bool:
 
 # Markers whose VENDOR is known, but for which `identify_widget()` found
 # no CURRENTLY-solvable challenge on THIS page. Restored VERBATIM from
-# skyscanner-scraper's captcha_solver.py (which added it 2026-09-20 after
-# 2Captcha's own team confirmed PerimeterX has no task type at all —
-# "there is no solve path here, full stop" for that vendor specifically);
+# skyscanner-scraper's captcha_solver.py (which added it 2026-09-20 for a
+# PerimeterX challenge that repo does not implement a solve path for);
 # shein-scraper's copy — the newest sibling and this repo's porting
-# source — had dropped it, which per CLAUDE.md §7 reads as a divergence
+# source — had dropped it, which reads as a divergence
 # rather than a decision, since nothing in shein-scraper needed it.
 #
-# `"datadome"` in this dict does NOT mean the same thing as
-# `"perimeterx"`/`"cloudflare_managed_challenge"` any more (corrected
-# 2026-09-22 — see module docstring). DataDome DOES have a real 2Captcha
-# task type (`CaptchaType.DATADOME_SLIDER`), already caught by
+# `"perimeterx"` and `"cloudflare_managed_challenge"` here mean "this repo
+# does not implement a solve path for this challenge" (for Cloudflare, the
+# challenge-page interception is not implemented), nothing about what the
+# solving service offers. `"datadome"` means something different (corrected
+# 2026-09-22 — see module docstring): DataDome has a 2Captcha task type this
+# repo DOES implement (`CaptchaType.DATADOME_SLIDER`), already caught by
 # `identify_widget()` above when its slider iframe is present. This entry
 # is reached only for the OTHER case: DataDome's marker is present
 # (`window.DataDomeJsTag`, a `datadome` cookie — on every g2.com page,
@@ -389,8 +390,7 @@ def detect_from_html(html: str, extra_markers: Sequence[str] = ()) -> bool:
 # `detected_unidentified_widget` ("we failed to parse it"); with it, the
 # run reports `unsupported_vendor` + `vendor="datadome"` ("present, no
 # active challenge to solve here"). Neither wording should be read as "not
-# solvable at all" for DataDome any more — that claim was the bug Roman
-# caught.
+# solvable at all" for DataDome any more — that claim was the bug.
 #
 # Checked ONLY after `identify_widget()` already returned None for a marker
 # that DID match `GENERIC_BOT_CHALLENGE_MARKERS`/`extra_markers` — a real
@@ -407,8 +407,9 @@ _UNSUPPORTED_VENDOR_MARKERS = {
 def identify_unsupported_vendor(html: str) -> Optional[str]:
     """Best-effort: names WHICH known bot-defense vendor is present, for the
     case where a marker matched but `identify_widget()` could not turn it
-    into a solvable `(type, sitekey)` pair — because no such pair exists
-    for this vendor, not because extraction failed. Returns a short vendor
+    into a solvable `(type, sitekey)` pair — because this repo does not
+    implement a solve path for that vendor's challenge (PerimeterX, the
+    Cloudflare challenge page), not because extraction failed. Returns a short vendor
     name for an honest log message; the caller must not treat this as
     something actionable (see `solve_when_blocked`'s `"unsupported_vendor"`
     action, which reports EXIT_BLOCKED same as any other block, just with
@@ -538,18 +539,19 @@ def _task_payload(
     try:
         task_type = type_map[signal.captcha_type]
     except KeyError:
-        # A CaptchaType with no 2Captcha task type behind it. Nothing in
-        # this module can produce one today (`identify_widget()` only ever
-        # returns members that are mapped, and a vendor with no solve path
-        # — DataDome, PerimeterX — is deliberately NOT a CaptchaType at
-        # all; see `identify_unsupported_vendor()`). This guard exists so
+        # A CaptchaType this repo has no task mapping for. Nothing in this
+        # module can produce one today (`identify_widget()` only ever
+        # returns members that are mapped, and a vendor this repo does not
+        # implement — PerimeterX, the Cloudflare challenge page — is
+        # deliberately NOT a CaptchaType at all; see
+        # `identify_unsupported_vendor()`). This guard exists so
         # that if a future member IS added without a mapping, the run gets
         # `solve_when_blocked`'s documented "a solver-side error is a
         # WARNING, never a crash" behaviour instead of a bare KeyError
         # escaping through a `except TwoCaptchaError` that never sees it.
         raise TwoCaptchaError(
-            f"no 2Captcha task type is defined for {signal.captcha_type.value} — "
-            f"it cannot be solved automatically"
+            f"this repo does not implement a task mapping for "
+            f"{signal.captcha_type.value}"
         ) from None
     task = {"type": task_type, "websiteURL": page_url, "websiteKey": signal.sitekey}
     if signal.captcha_type == CaptchaType.RECAPTCHA_V3:
@@ -560,7 +562,7 @@ def _task_payload(
         # score` is the CLI knob; omitting it would leave 2Captcha's own
         # server-side default in effect, silently, which is the same
         # "documented flag nobody reads" shape this family has shipped
-        # before (CLAUDE.md §17) — so this module always sends one.
+        # before — so this module always sends one.
         task["minScore"] = min_score
     return task
 
@@ -620,6 +622,17 @@ def solve_when_blocked(
             signal, page_url, proxyless=proxyless, min_score=min_score,
             proxy=proxy, user_agent=user_agent,
         )
+        # The per-page allowance is checked HERE, after every free check
+        # above and immediately before the one call that costs money, so a
+        # --block-retries retry or a proxy rotation re-fetching the same page
+        # cannot buy a second solve for it.
+        if not client.solve_budget.spend(page_url):
+            return {
+                "action": "budget_exhausted",
+                "captcha_type": signal.captcha_type.value,
+                "detail": f"the paid-solve allowance for this page "
+                          f"({client.solve_budget.per_page}) is already spent",
+            }
         token = client.solve_and_wait(task)
         return {"action": "solved", "captcha_type": signal.captcha_type.value, "token": token}
     except TwoCaptchaAuthError as exc:
@@ -634,7 +647,7 @@ def solve_when_blocked(
         # landing in one generic bucket.
         if signal.captcha_type == CaptchaType.DATADOME_SLIDER and "requires a proxy" in str(exc):
             return {"action": "warning_no_proxy", "detail": str(exc)}
-        # Confirmed live, 2026-09-22 (Roman, real proxy-mode run against
+        # Confirmed live, 2026-09-22 (real proxy-mode run against
         # g2.com — see module docstring): 2Captcha's own createTask rejects
         # a DataDomeSliderTask outright with `ERROR_BAD_PARAMETERS ... "t=
         # bv" ... your IP address is banned` when the challenge URL's own
