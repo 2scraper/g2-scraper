@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "g2-scraper"
-version = "0.1.0"
+version = "0.2.0"
 description = "g2.com B2B software review/ratings scraper (Playwright, Selenium, Puppeteer, or 2Captcha's Scraping Browser API via CDP) — local-first, category-listing + JSON-LD product parsing, proxies, fingerprints"
 readme = "README.md"
 requires-python = ">=3.9"

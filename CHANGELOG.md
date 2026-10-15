@@ -6,6 +6,8 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
 > **Behaviour changes for existing scripts (2026-10-14).** Exit codes:
 > rows gathered and then a block or remote error now exit `6` (`partial`),
 > not `3`/`5`; a served page that yields nothing usable (a page-1 parser
@@ -18,6 +20,7 @@ All notable changes to this project are documented here. Format follows
 > `--category`/`--product`, and `.env.example` ships it commented out.
 
 ### Fixed — 2026-10-14
+
 - **One paid solve per page.** Every `--block-retries` attempt re-ran the
   scrape and could buy a fresh DataDome solve for the same page: measured
   with a stubbed solver, one blocked page bought 3 solves at the default
@@ -52,6 +55,7 @@ All notable changes to this project are documented here. Format follows
   the rules are stated in place.
 
 ### Added — 2026-09-28, `--scraper-api-cdp`: Scraping Browser routing and country pinning for `--scraper-api`
+
 - `--scraper-api` on its own has two documented gaps: no captcha solving
   at all (a solved token has no live page/DOM in that mode to be injected
   into, so g2.com's DataDome challenge goes unsolved there), and no way to
@@ -190,5 +194,6 @@ by default.
   no pricing JSON-LD, so this is the parser most likely to break first if
   G2 restyles the page.
 
-[Unreleased]: https://github.com/2scraper/g2-scraper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/2scraper/g2-scraper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/2scraper/g2-scraper/releases/tag/v0.2.0
 [0.1.0]: https://github.com/2scraper/g2-scraper/releases/tag/v0.1.0
