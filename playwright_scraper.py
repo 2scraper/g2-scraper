@@ -2,8 +2,7 @@
 """playwright_scraper.py — Playwright engine for the g2-scraper family
 member. Playwright is the primary engine (see selenium_scraper.py /
 puppeteer_scraper.py for parity copies — all three must agree on CLI
-flags, exit codes, run status and whether a run crashes or spends money,
-CLAUDE.md §4).
+flags, exit codes, run status and whether a run crashes or spends money).
 
 **Local-first, same principle as every other family member** — this
 launches an ordinary local headless Chromium by default and does NOT
@@ -11,7 +10,7 @@ require a 2Captcha Scraping Browser (`--cdp-endpoint`) session to run.
 `--proxy` / `--cdp-endpoint` / `--fingerprint` / `--scraper-api` are
 opt-in power options, not proven-necessary defaults.
 
-**Read this before trusting a run** (CLAUDE.md §15). g2_parser.py's
+**Read this before trusting a run**. g2_parser.py's
 selectors, URL shapes and JSON-LD blocks all came from a real, live
 capture of www.g2.com — but from a browser-rendering tool, NOT from this
 engine. No engine in this repo has ever run against g2.com: the build
@@ -21,7 +20,7 @@ nothing here has been proven end-to-end against the live site.
 
 **g2.com is protected by DataDome — corrected 2026-09-22: it IS solvable.**
 This repo originally claimed DataDome had no automated solve path at all;
-that was wrong (Roman, from 2Captcha's own team, pointed at
+that was wrong (see
 https://2captcha.com/api-docs/datadome-slider-captcha). 2Captcha ships a
 dedicated `DataDomeSliderTask` for DataDome's own interstitial slider
 challenge (confirmed live: `window.DataDomeJsTag`, `dd.g2.com/js/`,
@@ -60,7 +59,7 @@ category-ranking JSON, but its response's field names were never
 captured, so this repo ships no parser for it (see g2_parser.py's "Left
 for the next stage"). A `--no-enrich-grids` opt-out flag over an
 enrichment that cannot actually parse anything would be a documented flag
-that silently does nothing — the exact shape CLAUDE.md §17 names as its
+that silently does nothing — the exact shape this family names as its
 own defect class. Whoever captures a real response adds the parser to
 g2_parser.py and the flag here, together.
 """
@@ -98,7 +97,7 @@ from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptcha
 
 ENGINE_NAME = "playwright"
 
-# --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
+# --- the handful of engine constants that vary per site ---
 NAV_TIMEOUT_MS = 30_000
 READINESS_WAIT_MS = 1_500  # g2.com is server-rendered Rails/PJAX, NOT an SPA
                            # (confirmed — see g2_parser.py): product data is in
@@ -125,6 +124,7 @@ STILL_BLOCKED_ACTIONS = (
     "warning_solver_error",
     "detected_unidentified_widget",
     "unsupported_vendor",
+    "budget_exhausted",
 )
 
 log = logging.getLogger("playwright_scraper")
@@ -184,7 +184,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--proxy", default=None, help="A single proxy, e.g. http://login:pass@host:port (or set G2_PROXY)")
     p.add_argument("--proxy-file", default=None, help="One proxy per line, same formats as --proxy")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=3)
+    p.add_argument("--proxy-block-retries", type=_nonnegative_int, default=3)
     p.add_argument("--twocaptcha-key", default=None, help="(or set TWOCAPTCHA_KEY)")
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -202,7 +202,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set G2_CDP_ENDPOINT) — opt-in, not required for a normal run")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
-    p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows,Chrome'")
+    p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows'")
     p.add_argument("--fp-country", default=None, help="Fingerprint API filter, e.g. 'us'")
     p.add_argument(
         "--scraper-api", action="store_true",
@@ -227,8 +227,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
              "chaining two 2Captcha products together, not pointing this at a caller-supplied "
              "--cdp-endpoint (that flag stays ignored in --scraper-api mode, see its help text: an "
              "arbitrary CDP session isn't known to support this field the way 2Captcha's own does). "
-             "This is what actually gets --scraper-api real captcha auto-solve on g2.com's DataDome "
-             "challenge and exit-country pinning — see scraper_api_client.TwoCaptchaClient."
+             "Intended to give --scraper-api the Scraping Browser's own captcha auto-solve (UNVERIFIED "
+             "against g2.com's DataDome challenge) and exit-country pinning — see scraper_api_client.TwoCaptchaClient."
              "scraping_browser_connection_url and scrape_url's own docstrings for exactly what "
              "2Captcha documents. Requires --scraper-api. WIRED BUT NOT YET LIVE-TESTED: the "
              "underlying 'cdpurl' field is documented by 2Captcha but this codebase had never "
@@ -294,7 +294,7 @@ def _dump_path(out_path: str) -> str:
 async def _new_context(browser: Browser, proxy: Optional[Proxy], user_agent: Optional[str]) -> BrowserContext:
     kwargs = {}
     if proxy is not None:
-        # CLAUDE.md §3: credentials go into Playwright's own authenticated
+        # credentials go into Playwright's own authenticated
         # proxy dict, never into an argv flag.
         kwargs["proxy"] = proxy.playwright_proxy_dict()
     if user_agent:
@@ -412,7 +412,7 @@ async def _maybe_solve_captcha(
         # of why a solve was never even attempted.
         log.warning("Captcha solving skipped: %s", result.get("detail"))
     elif action == "warning_proxy_banned":
-        # Confirmed live, 2026-09-22 (Roman, real proxy-mode run against
+        # Confirmed live, 2026-09-22 (real proxy-mode run against
         # g2.com — see captcha_solver.py's module docstring): 2Captcha
         # itself refuses a DataDomeSliderTask when the challenge URL's own
         # `t` marker says DataDome already has this exact proxy exit
@@ -427,6 +427,8 @@ async def _maybe_solve_captcha(
         )
     elif action == "warning_solver_error":
         log.warning("Captcha solve failed: %s", result.get("detail"))
+    elif action == "budget_exhausted":
+        log.warning("Captcha solve NOT bought: %s -- reporting this page as blocked.", result.get("detail"))
     elif action == "solved":
         log.info("Captcha solved via 2Captcha (%s).", result.get("captcha_type"))
         if result.get("captcha_type") == CaptchaType.DATADOME_SLIDER.value:
@@ -496,8 +498,10 @@ async def _maybe_solve_captcha(
         # docstring): it means DataDome's always-present tag was seen but
         # no slider iframe was on THIS page, so there's nothing for
         # DataDomeSliderTask to solve right now. For other vendors in this
-        # bucket (PerimeterX, a Cloudflare managed challenge) it still
-        # means "confirmed, no 2Captcha task type exists at all."
+        # bucket (PerimeterX, a Cloudflare managed challenge) it means this
+        # repo does not implement a solve path for that challenge -- the
+        # Cloudflare challenge-page interception and PerimeterX are not
+        # implemented here. It says nothing about what 2Captcha offers.
         log.warning(
             "%s marker present, no currently-solvable challenge found on this page — reporting "
             "this run as blocked. If this vendor is 'datadome' and a slider challenge was expected, "
@@ -518,7 +522,7 @@ async def _maybe_solve_captcha(
 
 
 async def _connect_over_cdp(pw, cdp_endpoint: str):
-    """CLAUDE.md §8: `connect_over_cdp` repeats a failed
+    """`connect_over_cdp` repeats a failed
     `ws://login:password@…` endpoint in its own message AND in a four-line
     "Call log" — up to five copies of a live credential in one exception.
     Redact, and drop the original from the chain (`from None`) so its
@@ -535,7 +539,7 @@ async def _goto_with_retries(page: Page, url: str, *, retries: int, retry_delay:
                               ) -> Tuple[Optional[int], Optional[str]]:
     """Returns `(http_status, last_error)`. `last_error is not None` means
     every attempt failed — the caller treats that as a remote/navigation
-    failure for THAT page, never a crash (CLAUDE.md §6).
+    failure for THAT page, never a crash.
 
     Parity fix 2026-09-23: `selenium_scraper.py`/`puppeteer_scraper.py`'s
     versions of this function have always been proxy-pool aware — they
@@ -544,7 +548,7 @@ async def _goto_with_retries(page: Page, url: str, *, retries: int, retry_delay:
     `PROXY_DEAD_MARKERS`, so a proxy that Chromium itself reports as
     unreachable gets excluded from rotation immediately rather than
     waiting on `--block-retries`. This engine's version was missing that
-    entirely (no `proxy_pool`/`proxy` params at all) — a real CLAUDE.md §4
+    entirely (no `proxy_pool`/`proxy` params at all) — a real engine-
     parity gap, found while investigating why a `--proxy-file` run wasn't
     rotating cleanly."""
     last_error: Optional[str] = None
@@ -583,7 +587,7 @@ async def scrape_category(
     failed_pages)` — the same 5-tuple every scrape function in this repo
     (and its siblings) returns, so run() treats them uniformly.
 
-    CLAUDE.md §6: one page that fails to load or fails to parse is recorded
+    one page that fails to load or fails to parse is recorded
     in `failed_pages` and the loop moves on; it never discards the pages
     that already succeeded. That is what turns into EXIT_PARTIAL rather
     than losing a whole run to one bad page.
@@ -657,8 +661,14 @@ async def scrape_category(
             continue
         last_html = html
 
-        if status == 404 and page_num > start_page:
-            log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
+        if status == 404:
+            # A 404 is "no such page", never a block: it is not retried, it
+            # rotates nothing, and it must not tell the reader to buy a proxy.
+            if page_num == start_page:
+                log.warning("Listing page %d returned HTTP 404 — g2.com has no such category; check "
+                            "--category/--url. Not a block, so not retried.", page_num)
+            else:
+                log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
             break
         if status is not None and status >= 400:
             # DataDome answers with a 403 rather than a redirect, so a >=400
@@ -722,6 +732,10 @@ async def scrape_category(
                 )
             else:
                 log.info("Listing page %d yielded zero cards — treating that as the end of the category.", page_num)
+            if blocked and page_num not in failed_pages:
+                # Recorded so a block on page 2+ after rows were gathered is
+                # reported as partial data with this page missing.
+                failed_pages.append(page_num)
             if page_num == start_page:
                 pages_completed += 1
             break
@@ -791,7 +805,11 @@ async def scrape_product_page(
             return [], True, False, 0, [1]
         return [], False, True, 0, [1]
 
-    if status is not None and status >= 400:
+    not_found = status == 404
+    if not_found:
+        log.warning("Product page returned HTTP 404 — g2.com has no product at this address; check "
+                    "--product/--url. Not a block, so not retried.")
+    elif status is not None and status >= 400:
         log.warning("Product page returned HTTP %d — treating as blocked, not empty.", status)
         blocked = True
 
@@ -830,12 +848,17 @@ async def scrape_product_page(
         Path(_dump_path(args.out)).write_text(html, encoding="utf-8")
     await context.close()
 
-    if not products and not blocked:
+    if not products and not blocked and not not_found:
+        # A product URL names exactly one product, so a served page with no
+        # product data is a parser (or served-page) failure, not an empty
+        # result: page 1 goes into failed_pages and finish_run reports it as
+        # parser_found_nothing (exit 5) rather than "empty" (exit 4).
         log.warning(
             "Product page rendered but no usable SoftwareApplication JSON-LD was found (%s) — "
             "see g2_parser.parse_product_page(). Re-run with --dump-html to inspect the page.",
             gp.diagnose_unexpected_page(html),
         )
+        return products, blocked, False, 0, [1]
     return products, blocked, False, 1, []
 
 
@@ -876,7 +899,9 @@ async def scrape_pricing_page(
             return [], True, False
         return [], False, True
 
-    blocked = bool(status is not None and status >= 400)
+    if status == 404:
+        log.warning("Pricing page returned HTTP 404 — this product has no pricing page. Not a block.")
+    blocked = bool(status is not None and status >= 400 and status != 404)
     html = await page.content()
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS):
         captcha_result = await _maybe_solve_captcha(
@@ -953,8 +978,9 @@ def _scrape_via_scraper_api(
 
     `cdp_url`, when --scraper-api-cdp set one (see run()), routes this
     fetch through 2Captcha's own Scraping Browser instead of their
-    default pool — real captcha auto-solve for the DataDome challenge and
-    country pinning happen on 2Captcha's side of that session, not in
+    default pool — the Scraping Browser's own auto-solve (unverified against
+    g2.com's DataDome challenge) and country pinning happen on 2Captcha's
+    side of that session, not in
     this function; there is nothing this function itself needs to do
     differently to benefit from it beyond passing it through."""
     try:
@@ -968,7 +994,11 @@ def _scrape_via_scraper_api(
 
     html = result.body
     blocked = False
-    if result.target_status is not None and result.target_status >= 400:
+    not_found = result.target_status == 404
+    if not_found:
+        log.warning("Scraper API: target page returned HTTP 404 — no such page on g2.com; check "
+                    "the URL/slug. Not a block, so not retried.")
+    elif result.target_status is not None and result.target_status >= 400:
         log.warning("Scraper API: target page returned HTTP %d — treating as blocked.", result.target_status)
         blocked = True
 
@@ -983,11 +1013,12 @@ def _scrape_via_scraper_api(
         # own content is missing. DataDome's tag is on every g2.com page.
         if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS) and gp.count_product_page_data(html) == 0:
             blocked = True
-        if not products and not blocked:
+        if not products and not blocked and not not_found:
             log.warning(
                 "Product page fetched via Scraper API but no usable SoftwareApplication JSON-LD "
                 "was found (%s).", gp.diagnose_unexpected_page(html),
             )
+            return products, blocked, False, 0, [1]
         return products, blocked, False, 1, []
 
     if mode == "pricing":
@@ -1078,7 +1109,7 @@ async def run(args: argparse.Namespace) -> int:
     if args.scraper_api:
         # A whole separate, browserless code path — no Playwright import is
         # needed at all here (this mode runs even with no engine driver
-        # installed, CLAUDE.md §6), so the async_playwright-is-None check
+        # installed), so the async_playwright-is-None check
         # below is skipped entirely.
         if not args.twocaptcha_key:
             print("Error: --scraper-api requires --twocaptcha-key/TWOCAPTCHA_KEY", file=sys.stderr)

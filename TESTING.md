@@ -10,7 +10,7 @@
 
 ## What `smoke_test.py` actually covers
 
-96 checks, all offline, all passing with **no** engine driver installed (`python3 smoke_test.py`). What they are, by category — these are the real groupings in the file, not a generic template:
+110 checks (as of 2026-10-14), all offline, all passing with **no** engine driver installed (`python3 smoke_test.py`). What they are, by category — these are the real groupings in the file, not a generic template:
 
 - **Engine isolation and parity.** All three engines import with none of playwright/selenium/pyppeteer present; each imports its driver at module level behind `try/except ImportError` (asserted structurally *and* behaviourally, by making the drivers unimportable in a subprocess); all three expose the identical `--flag` set, the same default output filename stem, and the same per-site constants block (`NAV_TIMEOUT_MS`, `READINESS_WAIT_MS`, `MIN_CARD_MATCHES`), with `READINESS_WAIT_MS` asserted shorter than an SPA sibling's because g2.com is server-rendered.
 - **URL routing and robots.txt.** A `/products/*/reviews/*` URL (the one extra rule g2.com's robots.txt gives AI crawlers) is refused before any fetch; a URL shape with no parser is refused rather than fetched and failed on; a `grids.json` URL is refused with a message naming why; and each of the three real page shapes routes to its own mode in all three engines.

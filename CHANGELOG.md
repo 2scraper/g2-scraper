@@ -6,7 +6,52 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-### Added — 2026-09-28, `--scraper-api-cdp`: real captcha solving and country pinning for `--scraper-api`
+> **Behaviour changes for existing scripts (2026-10-14).** Exit codes:
+> rows gathered and then a block or remote error now exit `6` (`partial`),
+> not `3`/`5`; a served page that yields nothing usable (a page-1 parser
+> exception, a product page with no product data) now exits `5`
+> (`parser_found_nothing`), not `4`; an HTTP 404 target is no longer
+> "blocked" — it is fetched once and exits `4`, not `3`. A CSV cell starting
+> with `=`, `+`, `-`, `@`, tab, CR or LF now gets a leading `'`. A paid
+> captcha solve is now limited to one per page per run. `--proxy-block-retries`
+> now rejects negative values. `G2_URL` no longer overrides a typed
+> `--category`/`--product`, and `.env.example` ships it commented out.
+
+### Fixed — 2026-10-14
+- **One paid solve per page.** Every `--block-retries` attempt re-ran the
+  scrape and could buy a fresh DataDome solve for the same page: measured
+  with a stubbed solver, one blocked page bought 3 solves at the default
+  `--block-retries 2` and 6 at 5. The per-page allowance now lives on the
+  run's single 2Captcha client and is checked immediately before each
+  purchase, in all three engines; retries and proxy rotation do not reset
+  it. A page that has used its allowance is reported as blocked.
+- **Atomic output.** JSON, CSV and the `.meta.json` sidecar are written to a
+  temporary file in the same directory, fsynced and renamed into place. A
+  failure part-way through used to leave a truncated file where the previous
+  good output was. New files get `0o666 & ~umask`; an existing file keeps
+  its mode.
+- **CSV formula guard**, with `csv_cells_escaped` in the sidecar (see the
+  note above). Numbers and the JSON output are untouched.
+- **Outcome classification** (see the note above), and the sidecar's
+  `stop_reason` now says why a run stopped instead of repeating `status`.
+- **`G2_URL` precedence**: a `G2_URL` in the environment or `.env` used to
+  replace a typed `--category`/`--product` silently.
+- **`.gitignore`** now ignores every `.env*` copy (`.env.bak`, `.env.local`,
+  …) and keeps `.env.example`; `.dockerignore` likewise.
+- **Credential scan** (`.github/ci_checks.py`): now catches an unquoted
+  `.env` line, a bare 32-hex key, and JSON-escaped quotes; reads ignored
+  `.env.*` backups; recognises any virtualenv by its `pyvenv.cfg`; scans
+  `smoke_test.py` for every rule except its deliberate masking fixtures;
+  and fails if it read no files.
+- **Wording**: comments no longer state what 2Captcha cannot solve — a
+  Cloudflare challenge page or PerimeterX is described as something this
+  repo does not implement. `--scraper-api-cdp`'s DataDome auto-solve is
+  described as unverified everywhere (README, help, this file).
+  `--fp-tags` examples use a single tag (`Windows`).
+- Code comments and checks no longer cite a private maintainers' file;
+  the rules are stated in place.
+
+### Added — 2026-09-28, `--scraper-api-cdp`: Scraping Browser routing and country pinning for `--scraper-api`
 - `--scraper-api` on its own has two documented gaps: no captcha solving
   at all (a solved token has no live page/DOM in that mode to be injected
   into, so g2.com's DataDome challenge goes unsolved there), and no way to
@@ -21,10 +66,11 @@ All notable changes to this project are documented here. Format follows
   not a caller-supplied `--cdp-endpoint` (kept separate on purpose: an
   arbitrary CDP session isn't known to support this field the way
   2Captcha's own does, and `--scraper-api` already ignores
-  `--cdp-endpoint` for the same reason). This is what actually gives
-  `--scraper-api` real captcha auto-solve for DataDome (2Captcha's own
-  Scraping Browser solves it on their side of the session before the
-  HTML ever reaches this repo) and country pinning, via the new
+  `--cdp-endpoint` for the same reason). The intent is to give
+  `--scraper-api` the Scraping Browser's own captcha auto-solve and
+  country pinning; whether that auto-solve clears g2.com's DataDome
+  challenge is UNVERIFIED (never run against g2.com). Country pinning is
+  via the new
   `--scraper-api-country`/`--scraper-api-profile-id` flags (the latter
   reuses a profile across runs the same way `scraping_browser_connection_
   url()`'s own docstring already recommends for `--cdp-endpoint`).

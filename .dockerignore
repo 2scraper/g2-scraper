@@ -1,5 +1,6 @@
 .git
-.env
+.env*
+!.env.example
 *.json
 *.csv
 !sample_output.json

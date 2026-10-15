@@ -19,7 +19,7 @@ dist/
 build/
 # CI's engine-smoke job creates one venv PER engine right inside the
 # checkout (.venv-playwright, .venv-selenium, .venv-puppeteer — see
-# tests.yml, CLAUDE.md §16), not a single .venv. A bare `.venv/` pattern
+# tests.yml), not a single .venv. A bare `.venv/` pattern
 # doesn't match those suffixed names, so `git ls-files --others
 # --exclude-standard` (.github/ci_checks.py's file list) was walking
 # straight into each one's installed packages and scanning THEIR test
@@ -40,9 +40,12 @@ node_modules/
 .idea/
 .vscode/
 
-# secrets
+# secrets — `.env*`, not just `.env`: a working copy renamed the way people
+# actually rename one (.env.bak, .env.local, .env.save) is otherwise
+# untracked but NOT ignored, one `git add -A` away from a commit.
 *.log
-.env
+.env*
+!.env.example
 *.key
 secrets*
 # --proxy-file input (README's own example names it proxies.txt) — a real

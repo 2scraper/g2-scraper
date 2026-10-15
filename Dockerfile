@@ -4,7 +4,7 @@
 # requirements-puppeteer.txt).
 #
 # The COPY list below is the whole point of building this image in CI
-# (CLAUDE.md §11 — nothing else builds it, which is how earlier family
+# (nothing else builds it, which is how earlier family
 # members shipped a broken one). It was written before the engine scripts
 # and smoke_test.py existed, then reconciled against them once they
 # landed: this repo's smoke_test.py builds almost every fixture inline —
@@ -28,7 +28,7 @@ RUN pip install --no-cache-dir -r requirements-playwright.txt \
 # `RUN python3 smoke_test.py` crash the build with a plain
 # ModuleNotFoundError, before ever reaching the guarded-import checks it
 # exists to run. That is exactly how an earlier family member shipped a
-# broken image (CLAUDE.md §11). Copying the .py file costs nothing:
+# broken image. Copying the .py file costs nothing:
 # selenium/pyppeteer aren't installed in this image, so their own
 # try/except ImportError guard is what fires, the same as smoke_test.py's
 # no-engine-installed path in CI.
@@ -37,7 +37,7 @@ COPY env_config.py proxy_pool.py output_writer.py captcha_solver.py \
      g2_parser.py playwright_scraper.py puppeteer_scraper.py \
      selenium_scraper.py smoke_test.py ./
 # smoke_test.py reads this one straight off disk (the ENV_KEYS <->
-# .env.example sync check, CLAUDE.md §17) — leaving it out crashes the
+# .env.example sync check) — leaving it out crashes the
 # build the same way a missing .py module above would.
 COPY .env.example ./
 # The two real (scrubbed) HTML captures smoke_test.py reads off disk

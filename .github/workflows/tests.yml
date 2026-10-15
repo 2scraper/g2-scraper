@@ -21,7 +21,7 @@ jobs:
       - name: Byte-compile everything
         run: python -m compileall -q .
       - name: Run the offline smoke suite
-        # This job installs NO engine driver on purpose: CLAUDE.md §6 says
+        # This job installs NO engine driver on purpose: the family rule is that
         # every engine script must import cleanly with none of
         # playwright/selenium/pyppeteer present, and this is the job that
         # proves it rather than asserting it.
@@ -32,16 +32,16 @@ jobs:
             python3 "$engine.py" --help > /dev/null
           done
       - name: sample_output.{json,csv} match the Product schema
-        # These two files are part of the standard doc set (CLAUDE.md §15)
+        # These two files are part of the standard doc set
         # and are written in this repo's documentation stage, after the
         # engines and this suite. Until they land, this step reports a
         # WARNING rather than failing: a check that is red for a reason
         # everyone already knows about teaches people to ignore checks
-        # (CLAUDE.md §11). Once the files exist, a schema mismatch is a
+        #. Once the files exist, a schema mismatch is a
         # hard failure, which is what this step is actually for.
         run: |
           if [ ! -f sample_output.json ] || [ ! -f sample_output.csv ]; then
-            echo "::warning::sample_output.json/csv are not in the repo yet (CLAUDE.md §15 — added with the doc set). Schema check skipped."
+            echo "::warning::sample_output.json/csv are not in the repo yet (added with the doc set). Schema check skipped."
             exit 0
           fi
           python3 -c "
@@ -114,7 +114,7 @@ jobs:
         with:
           python-version: "3.12"
       # One venv PER engine, installed from its OWN requirements file
-      # (CLAUDE.md §16). A single shared environment resolves the three
+      #. A single shared environment resolves the three
       # engines' mutually unsatisfiable pins (pyee, urllib3) by reaching
       # for whatever it can — on a sibling family repo that silently
       # installed a pyppeteer stub instead of the real >=1.0.2 the

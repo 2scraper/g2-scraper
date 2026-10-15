@@ -2,7 +2,7 @@
 """smoke_test.py — one file of plain functions with inline synthetic-fixture
 checks. No pytest, no conftest, no engine driver required: this runs, and
 must pass, in an environment with none of playwright/selenium/pyppeteer
-installed (CLAUDE.md §6), which is exactly what CI's offline job is.
+installed, which is exactly what CI's offline job is.
 
 **Honesty note, read before trusting a green run** (the same caveat every
 family member's smoke_test.py carries). Every HTML fixture below is
@@ -213,7 +213,7 @@ DATADOME_SLIDER_WALL_HTML = (
 )
 
 # The OTHER confirmed DataDome shape — `/interstitial/`, not `/captcha/` —
-# added 2026-09-22 after Roman's first real `--cdp-endpoint` + real-key run
+# added 2026-09-22 after the first real `--cdp-endpoint` + real-key run
 # against live g2.com actually hit it (see captcha_solver.py's module
 # docstring for the full story). Synthetic, mirroring
 # DATADOME_SLIDER_WALL_HTML's own style; the real scrubbed capture this is
@@ -232,7 +232,7 @@ DATADOME_INTERSTITIAL_WALL_HTML = (
 
 
 # --------------------------------------------------------------------------- #
-# Engine import/CLI hygiene (CLAUDE.md §6)
+# Engine import/CLI hygiene
 # --------------------------------------------------------------------------- #
 @check("engines import cleanly regardless of installed drivers")
 def _():
@@ -249,7 +249,7 @@ def _():
 
 
 @check(
-    "BEHAVIORAL proof of CLAUDE.md §6, not just the structural grep above: with "
+    "BEHAVIORAL proof of the rule, not just the structural grep above: with "
     "playwright/selenium/pyppeteer made unimportable (a meta_path blocker in a subprocess), all "
     "three engine modules still import, and each reports its own driver as absent rather than "
     "raising. This is the check the structural one can only approximate — and it is the one that "
@@ -290,15 +290,15 @@ print("NO_DRIVER_IMPORT_OK")
     )
 
 
-@check("no forbidden overclaiming wording in any shipped .py/.md/.html/.toml/.cfg/.yml file (CLAUDE.md §12)")
+@check("no forbidden overclaiming wording in any shipped .py/.md/.html/.toml/.cfg/.yml file")
 def _():
     banned = (
         "cloud browser", "antidetect browser", "2scraper antidetect browser",
         "gate.2prx.com", "--antidetect", "antidetect_local_api",
     )
-    # smoke_test.py and CLAUDE.md are allowed to NAME the banned phrases —
+    # smoke_test.py is allowed to NAME the banned phrases —
     # that is what makes this check readable. Nothing else is.
-    exempt_names = {"smoke_test.py", "CLAUDE.md"}
+    exempt_names = {"smoke_test.py"}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
@@ -313,7 +313,7 @@ def _():
             assert phrase not in text, f"{path.relative_to(ROOT)}: contains banned phrase {phrase!r}"
 
 
-@check("all three engines expose the identical --flag set (CLAUDE.md §4)")
+@check("all three engines expose the identical --flag set")
 def _():
     def flag_set(mod):
         return {opt for a in mod.build_arg_parser()._actions for opt in a.option_strings if opt.startswith("--")}
@@ -332,7 +332,7 @@ def _():
         assert mod._default_out("csv") == "g2_results.csv"
 
 
-@check("all three engines carry the CLAUDE.md §5 per-site constants block, and READINESS is SHORTER than an SPA sibling's 3s (g2.com is server-rendered Rails/PJAX, confirmed — nothing has to hydrate before the content is readable)")
+@check("all three engines carry the per-site constants block, and READINESS is SHORTER than an SPA sibling's 3s (g2.com is server-rendered Rails/PJAX, confirmed — nothing has to hydrate before the content is readable)")
 def _():
     assert playwright_scraper.NAV_TIMEOUT_MS == 30_000
     assert playwright_scraper.READINESS_WAIT_MS < 3_000, playwright_scraper.READINESS_WAIT_MS
@@ -508,10 +508,10 @@ def _():
 
 
 @check(
-    "parity fix 2026-09-23 (CLAUDE.md §4/§6): playwright_scraper.py's _goto_with_retries() now "
+    "parity fix 2026-09-23: playwright_scraper.py's _goto_with_retries() now "
     "accepts proxy_pool=/proxy= and detects a dead-proxy marker via is_proxy_dead_error(), matching "
     "the capability selenium_scraper.py and puppeteer_scraper.py already had (a real, previously "
-    "undiscovered engine-parity gap — playwright is the PRIMARY engine per CLAUDE.md §14 and had the "
+    "undiscovered engine-parity gap — playwright is the PRIMARY engine, and had the "
     "weakest proxy-failure detection of the three)"
 )
 def _():
@@ -527,7 +527,6 @@ def _():
         sig = _inspect.signature(mod._goto_with_retries)
         assert "proxy_pool" in sig.parameters and "proxy" in sig.parameters, (
             f"{mod.__name__}: _goto_with_retries() must accept proxy_pool=/proxy= — engine parity "
-            f"(CLAUDE.md §4)"
         )
 
 
@@ -538,7 +537,7 @@ def _():
         assert "diagnose_unexpected_page" in src, f"{path}: no zero-products diagnostic"
 
 
-@check("all three engines check the HTTP status for a block (DataDome answers 403, it does not redirect) and record a failed page rather than crashing the run (CLAUDE.md §6 -> EXIT_PARTIAL)")
+@check("all three engines check the HTTP status for a block (DataDome answers 403, it does not redirect) and record a failed page rather than crashing the run (-> EXIT_PARTIAL)")
 def _():
     for path in ENGINE_FILES:
         src = (ROOT / path).read_text(encoding="utf-8")
@@ -552,7 +551,7 @@ def _():
     if not scanner.exists():
         # This check inspects the repo's own meta-files (.github/, the
         # workflow YAMLs) — none of which the Dockerfile COPYs into the
-        # build context on purpose (CLAUDE.md §14: the image ships no test
+        # build context on purpose (the image ships no test
         # suite and no CI plumbing). `RUN python3 smoke_test.py` runs this
         # same file from inside that stripped-down build, where the thing
         # being asserted about literally isn't there to assert about. The
@@ -603,7 +602,7 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# output_writer — exit codes / precedence / dedupe (CLAUDE.md §9)
+# output_writer — exit codes / precedence / dedupe
 # --------------------------------------------------------------------------- #
 @check("exit codes and STATUS_BY_EXIT match the family contract exactly")
 def _():
@@ -628,7 +627,7 @@ def _mk_product(sku, price=None, **kw):
     return output_writer.Product(**defaults)
 
 
-@check("finish_run precedence: remote_api_error status is never laundered into 'complete' just because products were present")
+@check("finish_run: rows gathered and THEN a remote error is 'partial' (exit 6), never 'complete' — and the sidecar's stop_reason names the error. Changed 2026-10-14: this used to pin exit 5 for a run holding rows, but 5 promises the content was never obtained, and these rows were")
 def _():
     with tempfile.TemporaryDirectory() as td:
         out = str(Path(td) / "out.json")
@@ -637,10 +636,11 @@ def _():
             pages_requested=1, pages_completed=1, failed_pages=None,
             blocked=True, remote_api_error=True, allow_empty=True, started_at=0.0,
         )
-        assert code == output_writer.EXIT_REMOTE_API_ERROR
+        assert code == output_writer.EXIT_PARTIAL, code
         assert Path(out).exists(), "already-collected products must still be written out"
         meta = json.loads(Path(f"{out}.meta.json").read_text())
-        assert meta["status"] == "remote_api_error", meta["status"]
+        assert meta["status"] == "partial", meta["status"]
+        assert meta["stop_reason"] == "remote_api_error", meta["stop_reason"]
 
 
 @check("finish_run precedence: blocked+zero-products respects --allow-empty for WHETHER to write, never for the STATUS")
@@ -668,18 +668,20 @@ def _():
         assert not Path(f"{out_b}.meta.json").exists(), "a failed run never gets a sidecar"
 
 
-@check("finish_run precedence: a blocked run that DID collect products is still 'blocked', never 'complete' (the specific regression CLAUDE.md §9 names — some batches returning results while the run was in fact gated partway through)")
+@check("finish_run: a block AFTER rows were gathered is 'partial' (exit 6) with stop_reason 'blocked' — never 'complete', and no longer 'blocked'/exit 3. Changed 2026-10-14: exit 3 labelled partial data as a block, and diff_runs then refused the rows that were written")
 def _():
     with tempfile.TemporaryDirectory() as td:
         out = str(Path(td) / "out.json")
         code = output_writer.finish_run(
             products=[_mk_product("a"), _mk_product("b")], out_path=out, fmt="json", engine="test", url="u",
-            pages_requested=3, pages_completed=2, failed_pages=None,
+            pages_requested=3, pages_completed=1, failed_pages=[2],
             blocked=True, remote_api_error=False, allow_empty=False, started_at=0.0,
         )
-        assert code == output_writer.EXIT_BLOCKED
+        assert code == output_writer.EXIT_PARTIAL, code
         meta = json.loads(Path(f"{out}.meta.json").read_text())
-        assert meta["status"] == "blocked", meta["status"]
+        assert meta["status"] == "partial", meta["status"]
+        assert meta["stop_reason"] == "blocked", meta["stop_reason"]
+        assert meta["failed_pages"] == [2]
         assert meta["product_count"] == 2, "the products it DID collect must still be written"
 
 
@@ -697,7 +699,7 @@ def _():
         assert not Path(f"{out}.meta.json").exists()
 
 
-@check("finish_run: a failed first/only page with zero products is 'empty', not 'partial' (CLAUDE.md §9: zero_products > partial)")
+@check("finish_run: a page that was served or attempted but yielded NOTHING usable (parser exception, product page without product data), with zero rows, is 'parser_found_nothing' exit 5 — not 'empty' exit 4. Changed 2026-10-14: exit 4 told the reader the target was empty and sent them to check the URL instead of the parser")
 def _():
     with tempfile.TemporaryDirectory() as td:
         out = str(Path(td) / "out.json")
@@ -706,8 +708,16 @@ def _():
             pages_requested=1, pages_completed=0, failed_pages=[1],
             blocked=False, remote_api_error=False, allow_empty=False, started_at=0.0,
         )
-        assert code == output_writer.EXIT_ZERO_PRODUCTS
+        assert code == output_writer.EXIT_REMOTE_API_ERROR, code
         assert not Path(out).exists()
+        out2 = str(Path(td) / "out2.json")
+        code = output_writer.finish_run(
+            products=[], out_path=out2, fmt="json", engine="test", url="u",
+            pages_requested=1, pages_completed=0, failed_pages=[1],
+            blocked=False, remote_api_error=False, allow_empty=True, started_at=0.0,
+        )
+        meta = json.loads(Path(f"{out2}.meta.json").read_text())
+        assert (meta["status"], meta["stop_reason"]) == ("parser_found_nothing", "parser_found_nothing"), meta
 
 
 @check("finish_run: partial (failed pages, some products) writes output and reports EXIT_PARTIAL")
@@ -770,6 +780,7 @@ def _():
 @check("EXIT_REMOTE_API_ERROR (5) is reachable without a crash: a Scraper API failure is a broken remote dependency, not a bug in this repo — a caller (CI/cron) must be able to tell those apart")
 def _():
     class _FailingClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         def scrape_url(self, url, timeout=60, cdp_url=None):
             raise scraper_api_client.TwoCaptchaError("upstream 502")
 
@@ -784,7 +795,7 @@ def _():
         )
 
 
-@check("Product field order: CLAUDE.md §9's family-common fields first, in that exact order, g2-specific fields after")
+@check("Product field order: family-common fields first, in that exact order, g2-specific fields after")
 def _():
     expected_head = [
         "sku", "source", "category", "title", "brand", "price", "currency",
@@ -844,7 +855,7 @@ def _():
     assert "secretpass" not in p.server_only()
 
 
-@check("redact_credentials scrubs URL userinfo AND key/token params, globally (CLAUDE.md §8: an exception message is a log)")
+@check("redact_credentials scrubs URL userinfo AND key/token params, globally (an exception message is a log)")
 def _():
     message = (
         "connect_over_cdp failed: ws://g2user-zone-scraping_browser:secretpass@cb.2captcha.com:9222 "
@@ -867,7 +878,7 @@ def _():
         class chromium:
             @staticmethod
             async def connect_over_cdp(_endpoint):
-                # Exactly the shape CLAUDE.md §8 documents: the driver
+                # Exactly the documented shape: the driver
                 # repeats the endpoint, credentials and all, several times.
                 raise RuntimeError(
                     f"could not connect: {_endpoint}\nCall log:\n - {_endpoint}\n - {_endpoint}"
@@ -910,8 +921,8 @@ def _():
 
     def _boom(*_a, **_kw):
         # Exactly what `requests` raises: the FULL URL, query string
-        # included, inside the exception text (CLAUDE.md §8 names this
-        # endpoint by name).
+        # included, inside the exception text (a known leak path for this
+        # endpoint).
         raise requests.exceptions.HTTPError(
             f"500 Server Error for url: https://api.2captcha.com/fingerprint/random?key={key}&format=chromium"
         )
@@ -928,7 +939,7 @@ def _():
     assert profile is None, "a failed fingerprint fetch degrades to no profile, never a crash"
 
 
-@check("selenium refuses a CREDENTIALED --cdp-endpoint outright with EXIT_BAD_USAGE (CLAUDE.md §6's standing named exception), rather than silently dropping the credential")
+@check("selenium refuses a CREDENTIALED --cdp-endpoint outright with EXIT_BAD_USAGE (a standing, named exception), rather than silently dropping the credential")
 def _():
     code = selenium_scraper.run(_parse(selenium_scraper, [
         "--category", "crm",
@@ -959,12 +970,13 @@ def _():
 
 @check("a DataDome wall with NO visible slider challenge reports action='unsupported_vendor' + vendor='datadome' — NOT the vague 'detected_unidentified_widget' — because DataDome's own device-check tag is present but there is currently nothing to solve on this page")
 def _():
-    # Corrected 2026-09-22 (Roman caught this): DataDome itself DOES have a
+    # Corrected 2026-09-22: DataDome itself DOES have a
     # real 2Captcha task type — CaptchaType.DATADOME_SLIDER, see the
     # dedicated check below — so this fixture (DataDome's tag with no
     # slider iframe, the ordinary case on most page loads) is no longer
     # "DataDome can never be solved," it's "nothing to solve on THIS page."
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
 
     assert captcha_solver.identify_widget(DATADOME_WALL_HTML) is None, "no iframe in this fixture -> no extractable widget"
@@ -1020,7 +1032,7 @@ def _():
     )
 
 
-@check("the REAL scrubbed g2.com capture (tests/fixtures/g2_datadome_interstitial.html — Roman's first live --cdp-endpoint run, 2026-09-22) is identified as CaptchaType.DATADOME_SLIDER, not reported as unsupported_vendor")
+@check("the REAL scrubbed g2.com capture (tests/fixtures/g2_datadome_interstitial.html — the first live --cdp-endpoint run, 2026-09-22) is identified as CaptchaType.DATADOME_SLIDER, not reported as unsupported_vendor")
 def _():
     fixture_path = Path(__file__).parent / "tests" / "fixtures" / "g2_datadome_interstitial.html"
     real_html = fixture_path.read_text(encoding="utf-8")
@@ -1035,7 +1047,7 @@ def _():
         assert leaked_prefix not in real_html, f"scrubbed fixture still contains a real token: {leaked_prefix}"
 
 
-@check("a SECOND real scrubbed g2.com capture (tests/fixtures/g2_datadome_captcha_banned_ip.html — Roman's first real PROXY-mode run, 2026-09-22) confirms the /captcha/ path is ALSO real, not just 2Captcha's own documented shape — and carries a real t=bv (banned-IP) marker this repo had never seen before")
+@check("a SECOND real scrubbed g2.com capture (tests/fixtures/g2_datadome_captcha_banned_ip.html — the first real PROXY-mode run, 2026-09-22) confirms the /captcha/ path is ALSO real, not just 2Captcha's own documented shape — and carries a real t=bv (banned-IP) marker this repo had never seen before")
 def _():
     fixture_path = Path(__file__).parent / "tests" / "fixtures" / "g2_datadome_captcha_banned_ip.html"
     real_html = fixture_path.read_text(encoding="utf-8")
@@ -1053,6 +1065,7 @@ def _():
 @check("solve_when_blocked() reports action='warning_proxy_banned' — not the generic 'warning_solver_error' — when 2Captcha rejects a DataDomeSliderTask because the challenge's own t= marker says the proxy's IP is already banned (a REAL 2Captcha response, confirmed live 2026-09-22: 'ERROR_BAD_PARAMETERS ... your IP address is banned')")
 def _():
     class _BannedIPClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
         def solve_and_wait(self, task):
             raise scraper_api_client.TwoCaptchaError(
@@ -1074,6 +1087,7 @@ def _():
 @check("solve_when_blocked() for a DataDome slider challenge with NO proxy supplied returns 'warning_no_proxy' — never a crash, never a silently-skipped solve — because DataDomeSliderTask has no proxyless variant")
 def _():
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
         def solve_and_wait(self, task):  # pragma: no cover - must not be reached
             raise AssertionError("must not call 2Captcha without a proxy for DataDomeSliderTask")
@@ -1093,6 +1107,7 @@ def _():
     seen_tasks = []
 
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
         def solve_and_wait(self, task):
             seen_tasks.append(task)
@@ -1149,6 +1164,7 @@ def _():
 @check("a HEALTHY g2.com listing page — which also carries DataDome's tag, because every g2.com page does — is NOT treated as blocked: solve_when_blocked sees the rendered cards and skips solving entirely")
 def _():
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
 
     html = listing_html(cards=3)
@@ -1194,7 +1210,7 @@ def _():
     "BUG CLASS 1 (g2_parser.py's module docstring): EVERY function that takes an 'autosolve' "
     "parameter actually calls the Captcha.setAutoSolve helper somewhere in its body — "
     "playwright/puppeteer only, selenium is exempt because it cannot authenticate a "
-    "--cdp-endpoint at all (CLAUDE.md §6) and therefore has no such helper. shein-scraper shipped "
+    "--cdp-endpoint at all and therefore has no such helper. shein-scraper shipped "
     "a puppeteer scrape_product_page() that ACCEPTED `autosolve` and never armed anything, so a "
     "direct --url <product page> --cdp-endpoint run silently got no auto-solve and no warning. "
     "This repo has THREE page-loading functions per engine (category, product, pricing) and this "
@@ -1313,6 +1329,7 @@ def _():
 )
 def _():
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         api_key = "fake"
 
     url = "https://www.g2.com/products/hubspot-sales-hub/reviews"
@@ -1472,12 +1489,15 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# env_config — G2_* keys, placeholder detection, precedence (CLAUDE.md §17)
+# env_config — G2_* keys, placeholder detection, precedence
 # --------------------------------------------------------------------------- #
 @check("env_config.ENV_KEYS matches .env.example exactly, in both directions")
 def _():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
-    documented = {line.split("=", 1)[0] for line in example.splitlines() if "=" in line and not line.startswith("#")}
+    import re as _re
+    # Active `KEY=` lines plus commented-out `# KEY=value` examples (G2_URL
+    # ships commented so a copied .env cannot override a typed --category).
+    documented = {m.group(1) for m in (_re.match(r"^(?:# )?([A-Z][A-Z0-9_]*)=", line) for line in example.splitlines()) if m}
     assert documented == set(env_config.ENV_KEYS), (documented, set(env_config.ENV_KEYS))
 
 
@@ -1488,7 +1508,7 @@ def _():
     assert set(env_config.ENV_KEYS) == {"TWOCAPTCHA_KEY", "G2_PROXY", "G2_CDP_ENDPOINT", "G2_URL"}
 
 
-@check("env_config has exactly ONE _is_placeholder implementation and it treats a braced {...} fragment as unset (CLAUDE.md §17's named defect class: two independent checks for the same thing WILL drift apart)")
+@check("env_config has exactly ONE _is_placeholder implementation and it treats a braced {...} fragment as unset (a named defect class: two independent checks for the same thing WILL drift apart)")
 def _():
     assert env_config._is_placeholder("")
     assert env_config._is_placeholder(None)
@@ -1653,7 +1673,7 @@ def _():
     )
 
 
-@check("parse_category_listing falls back to the caller's category slug when the card JSON has none, and one malformed card costs only itself — never the other rows on the page (CLAUDE.md §6)")
+@check("parse_category_listing falls back to the caller's category slug when the card JSON has none, and one malformed card costs only itself — never the other rows on the page")
 def _():
     good = _card("ok-product", "OK Product", 777)
     broken = (
@@ -1857,13 +1877,14 @@ def _():
     "fake client that returns the synthetic fixtures, produces a written file plus sidecar and the "
     "right exit code for all three page shapes in all three engines — a category listing "
     "(EXIT_OK), a product /reviews page (EXIT_OK), and a DataDome wall (EXIT_BLOCKED, with NO file "
-    "and NO sidecar written, per CLAUDE.md §9). This is the closest this repo can get to an "
+    "and NO sidecar written). This is the closest this repo can get to an "
     "end-to-end engine test without network access to g2.com."
 )
 def _():
     import unittest.mock as mock
 
     class _FakeClient:
+        solve_budget = scraper_api_client.SolveBudget()  # one allowance per fake run
         def __init__(self, body, status=200):
             self._body, self._status = body, status
 
@@ -2022,6 +2043,366 @@ def _():
             assert captured.get("cdp_url") is None, f"{mod.__name__}: cdp_url should be None without --scraper-api-cdp, got {captured.get('cdp_url')!r}"
         finally:
             scraper_api_client.TwoCaptchaClient.scrape_url = original
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-14 audit fixes: atomic writes, CSV formula guard, paid-solve budget,
+# 404 / parser-failure / partial outcomes, G2_URL precedence, credential scan,
+# .env* ignore, private-citation guard.
+# --------------------------------------------------------------------------- #
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+
+class _FakePage:
+    """Just enough of a Playwright page for the scrape functions: every
+    goto answers with the next (status, html) the test queued, or the last
+    one again."""
+    def __init__(self, answers, context):
+        self._answers = list(answers)
+        self._html = ""
+        self.context = context
+        self.gotos = 0
+
+    async def goto(self, url, **_kw):
+        self.gotos += 1
+        status, html = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        self._html = html
+        return _FakeResponse(status)
+
+    async def wait_for_timeout(self, _ms):
+        return None
+
+    async def content(self):
+        return self._html
+
+    async def evaluate(self, _js):
+        return "Mozilla/5.0 (X11; Linux x86_64) Chrome/140.0 Safari/537.36"
+
+    async def reload(self, **_kw):
+        return None
+
+
+class _FakeContext:
+    def __init__(self, browser):
+        self.browser = browser
+
+    async def new_page(self):
+        page = _FakePage(self.browser.answers, self)
+        self.browser.pages.append(page)
+        return page
+
+    async def add_cookies(self, _cookies):
+        return None
+
+    async def close(self):
+        return None
+
+
+class _FakeBrowser:
+    def __init__(self, answers):
+        self.answers = answers
+        self.pages = []
+
+    async def new_context(self, **_kw):
+        return _FakeContext(self)
+
+
+class _CountingSolverClient:
+    """Stands in for TwoCaptchaClient: no network, counts purchases."""
+    def __init__(self):
+        self.api_key = "fake"
+        self.solve_budget = scraper_api_client.SolveBudget()
+        self.purchases = 0
+
+    def solve_and_wait(self, task):
+        self.purchases += 1
+        return json.dumps({"cookie": "datadome=X; Path=/; Secure; SameSite=Lax"})
+
+
+def _pw_args(argv, td):
+    args = _parse(playwright_scraper, argv + ["--out", str(Path(td) / "out.json"), "--retry-delay", "0", "--page-delay", "0"])
+    return args
+
+
+@check("paid-solve budget: one page buys at most ONE solve across every --block-retries attempt and proxy rotation (Playwright driven end to end through a fake browser; measured before the fix: 3 purchases at the default --block-retries 2, 6 at 5)")
+def _():
+    for block_retries in (0, 2, 5):
+        with tempfile.TemporaryDirectory() as td:
+            args = _pw_args(["--category", "crm", "--max-pages", "1", "--block-retries", str(block_retries)], td)
+            proxies = proxy_pool.load_proxies("http://login:password@10.0.0.1:8080", None)
+            pool = proxy_pool.ProxyPool(proxies, block_retries=100)
+            client = _CountingSolverClient()
+            browser = _FakeBrowser([(403, DATADOME_SLIDER_WALL_HTML)])
+            start = gp.category_url("crm")
+            for _attempt in range(args.block_retries + 1):  # the same loop run() uses
+                merged, blocked, *_ = asyncio.run(playwright_scraper.scrape_category(
+                    args=args, start_url=start, browser=browser, proxy_pool=pool,
+                    client=client, autosolve=False, user_agent=None,
+                ))
+                if not (blocked and not merged):
+                    break
+            assert client.purchases == 1, (block_retries, client.purchases)
+
+
+@check("paid-solve budget is checked inside solve_when_blocked BEFORE the purchase: a second call for the same page returns budget_exhausted without calling solve_and_wait, another page still gets its own allowance")
+def _():
+    client = _CountingSolverClient()
+    kw = dict(html=DATADOME_SLIDER_WALL_HTML, count_product_links=gp.count_result_cards,
+              extra_markers=gp.BOT_CHALLENGE_MARKERS,
+              proxy={"type": "http", "address": "10.0.0.1", "port": 8080, "login": "l", "password": "p"},
+              user_agent="Mozilla/5.0")
+    first = captcha_solver.solve_when_blocked(client=client, page_url="https://www.g2.com/categories/crm", **kw)
+    second = captcha_solver.solve_when_blocked(client=client, page_url="https://www.g2.com/categories/crm", **kw)
+    other = captcha_solver.solve_when_blocked(client=client, page_url="https://www.g2.com/categories/crm?page=2", **kw)
+    assert first["action"] == "solved" and second["action"] == "budget_exhausted", (first, second)
+    assert other["action"] == "solved"
+    assert client.purchases == 2, client.purchases
+    for mod in ENGINE_MODULES:
+        assert "budget_exhausted" in mod.STILL_BLOCKED_ACTIONS, mod.__name__
+
+
+@check("every engine creates its ONE TwoCaptchaClient (which owns the per-page solve budget) in run() BEFORE the --block-retries loop, so a retry or rotation never gets a fresh allowance")
+def _():
+    import ast
+    for path in ENGINE_FILES:
+        tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+        run_fn = next(n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run")
+        client_lines = [n.lineno for n in ast.walk(run_fn) if isinstance(n, ast.Call)
+                        and getattr(n.func, "id", None) == "TwoCaptchaClient"]
+        loops = [n for n in ast.walk(run_fn) if isinstance(n, (ast.For, ast.AsyncFor))
+                 and isinstance(n.target, ast.Name) and n.target.id == "block_attempt"]
+        assert client_lines and loops, path
+        for loop in loops:
+            inside = [n for n in ast.walk(loop) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "TwoCaptchaClient"]
+            assert not inside, f"{path}: a TwoCaptchaClient is created inside the block-retries loop"
+
+
+@check("HTTP 404 is 'not found', not 'blocked': a product slug answering 404 is fetched ONCE (no block retries) and the run is empty (exit 4), never exit 3")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        args = _pw_args(["--product", "no-such-product", "--block-retries", "2"], td)
+        browser = _FakeBrowser([(404, "<html><head><title>Page not found | G2</title></head><body>404</body></html>")])
+        products, blocked, remote, done, failed = asyncio.run(playwright_scraper.scrape_product_page(
+            args=args, start_url=gp.product_url("no-such-product"), browser=browser, proxy_pool=None,
+            client=None, autosolve=False, user_agent=None,
+        ))
+        assert (products, blocked, remote, failed) == ([], False, False, []), (blocked, remote, failed)
+        code = output_writer.finish_run(products=products, out_path=args.out, fmt="json", engine="t", url="u",
+                                        pages_requested=1, pages_completed=done, failed_pages=failed,
+                                        blocked=blocked, remote_api_error=remote, allow_empty=False, started_at=0.0)
+        assert code == output_writer.EXIT_ZERO_PRODUCTS, code
+        assert sum(p.gotos for p in browser.pages) == 1
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert "not_found = status == 404" in src and "status != 404" in src, f"{path}: 404 handling missing"
+        assert "not_found = result.target_status == 404" in src, f"{path}: Scraper API 404 handling missing"
+
+
+@check("a product page served with HTTP 200 and NO product data is a parser failure: page 1 is recorded as failed and the run exits 5 (parser_found_nothing), not 4")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        args = _pw_args(["--product", "hubspot-sales-hub"], td)
+        browser = _FakeBrowser([(200, "<html><head><title>HubSpot | G2</title></head><body>no json-ld</body></html>")])
+        products, blocked, remote, done, failed = asyncio.run(playwright_scraper.scrape_product_page(
+            args=args, start_url=gp.product_url("hubspot-sales-hub"), browser=browser, proxy_pool=None,
+            client=None, autosolve=False, user_agent=None,
+        ))
+        assert (products, blocked, failed) == ([], False, [1]), (blocked, failed)
+        code = output_writer.finish_run(products=products, out_path=args.out, fmt="json", engine="t", url="u",
+                                        pages_requested=1, pages_completed=done, failed_pages=failed,
+                                        blocked=blocked, remote_api_error=remote, allow_empty=False, started_at=0.0)
+        assert code == output_writer.EXIT_REMOTE_API_ERROR, code
+    for path in ENGINE_FILES:
+        src = (ROOT / path).read_text(encoding="utf-8")
+        assert src.count("return products, blocked, False, 0, [1]") == 2, f"{path}: browser and Scraper API product paths must both record the failed page"
+
+
+@check("a block on listing page 2 after page 1 produced rows is recorded in failed_pages and reported as partial (exit 6) with the page-1 rows written")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        args = _pw_args(["--category", "crm", "--max-pages", "3"], td)
+        browser = _FakeBrowser([(200, listing_html(cards=3)), (403, DATADOME_WALL_HTML)])
+        products, blocked, remote, done, failed = asyncio.run(playwright_scraper.scrape_category(
+            args=args, start_url=gp.category_url("crm"), browser=browser, proxy_pool=None,
+            client=None, autosolve=False, user_agent=None,
+        ))
+        assert len(products) == 3 and blocked and failed == [2], (len(products), blocked, failed)
+        code = output_writer.finish_run(products=products, out_path=args.out, fmt="json", engine="t", url="u",
+                                        pages_requested=3, pages_completed=done, failed_pages=failed,
+                                        blocked=blocked, remote_api_error=remote, allow_empty=False, started_at=0.0)
+        assert code == output_writer.EXIT_PARTIAL, code
+        meta = json.loads(Path(f"{args.out}.meta.json").read_text())
+        assert (meta["status"], meta["stop_reason"], meta["failed_pages"]) == ("partial", "blocked", [2]), meta
+
+
+@check("output writes are atomic: a failure part-way through json.dump leaves the previous good file byte-identical and no temp file behind")
+def _():
+    import os as _os
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "out.json")
+        output_writer.write_json([_mk_product("a")], out)
+        good = Path(out).read_bytes()
+        original_dump = output_writer.json.dump
+
+        def _half_then_fail(obj, f, **kw):
+            f.write("[{\"sku\": ")
+            raise OSError("disk full (injected)")
+        output_writer.json.dump = _half_then_fail
+        try:
+            try:
+                output_writer.write_json([_mk_product("b")], out)
+            except OSError:
+                pass
+            else:
+                raise AssertionError("the injected failure did not propagate")
+        finally:
+            output_writer.json.dump = original_dump
+        assert Path(out).read_bytes() == good, "the previous good output was damaged"
+        assert sorted(_os.listdir(td)) == ["out.json"], _os.listdir(td)
+
+
+@check("output file modes: a new file gets 0o666 & ~umask (checked under 022 and 002), an existing file keeps its own mode — never a flat 0600 or 0644")
+def _():
+    import os as _os
+    import stat as _stat
+    with tempfile.TemporaryDirectory() as td:
+        for umask, expected in ((0o022, 0o644), (0o002, 0o664)):
+            old = _os.umask(umask)
+            try:
+                p = str(Path(td) / f"new_{umask:o}.json")
+                output_writer.write_json([], p)
+                output_writer.write_meta(p, status="complete", stop_reason="complete", engine="t", url="u",
+                                         pages_requested=1, pages_completed=1, product_count=0, started_at=0.0)
+            finally:
+                _os.umask(old)
+            for q in (p, f"{p}.meta.json"):
+                got = _stat.S_IMODE(_os.stat(q).st_mode)
+                assert got == expected, (oct(umask), q, oct(got))
+        p = str(Path(td) / "tight.csv")
+        output_writer.write_csv([], p)
+        _os.chmod(p, 0o600)
+        output_writer.write_csv([_mk_product("a")], p)
+        assert _stat.S_IMODE(_os.stat(p).st_mode) == 0o600
+
+
+@check("CSV formula guard: formula-shaped STRING cells get a leading apostrophe in CSV only, numbers are untouched, JSON keeps the site's bytes, and csv_cells_escaped is in the sidecar UNDER the caller's extra")
+def _():
+    import csv as _csv
+    rows = [_mk_product("a", price=-5.0, title='=HYPERLINK("http://x")', category="+cmd")]
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "out.csv")
+        code = output_writer.finish_run(products=rows, out_path=out, fmt="csv", engine="t", url="u",
+                                        pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                        remote_api_error=False, allow_empty=False, started_at=0.0)
+        assert code == output_writer.EXIT_OK
+        with open(out, newline="", encoding="utf-8") as f:
+            row = next(_csv.DictReader(f))
+        assert row["title"] == '\'=HYPERLINK("http://x")', row["title"]
+        assert row["category"] == "'+cmd" and row["price"] == "-5.0", row
+        meta = json.loads(Path(f"{out}.meta.json").read_text())
+        assert meta["csv_cells_escaped"] == 2, meta
+        out_j = str(Path(td) / "out.json")
+        output_writer.finish_run(products=rows, out_path=out_j, fmt="json", engine="t", url="u",
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0)
+        assert json.loads(Path(out_j).read_text())[0]["title"] == '=HYPERLINK("http://x")'
+        out2 = str(Path(td) / "out2.csv")
+        output_writer.finish_run(products=rows, out_path=out2, fmt="csv", engine="t", url="u",
+                                 pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                 remote_api_error=False, allow_empty=False, started_at=0.0,
+                                 extra_meta={"csv_cells_escaped": "caller wins"})
+        assert json.loads(Path(f"{out2}.meta.json").read_text())["csv_cells_escaped"] == "caller wins"
+
+
+@check("G2_URL from the environment or .env never overrides a TYPED --category/--product; --url still outranks both")
+def _():
+    import os as _os
+    _os.environ["G2_URL"] = "https://www.g2.com/products/hubspot-sales-hub/reviews"
+    try:
+        for mod in ENGINE_MODULES:
+            args = env_config.apply_env(_parse(mod, ["--category", "crm"]), dotenv_path="/nonexistent/.env")
+            assert args.url is None, (mod.__name__, args.url)
+            assert mod._resolve_start_url(args) == (gp.category_url("crm"), "category")
+            args = env_config.apply_env(_parse(mod, []), dotenv_path="/nonexistent/.env")
+            assert args.url == _os.environ["G2_URL"], "with no target flag typed, G2_URL still applies"
+    finally:
+        del _os.environ["G2_URL"]
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert "\nG2_URL=" not in example, ".env.example must ship G2_URL commented out"
+
+
+@check("numeric retry flags reject negatives with an argparse error naming the flag, in all three engines (--proxy-block-retries used to accept -1)")
+def _():
+    import contextlib as _ctx
+    import io as _io
+    for mod in ENGINE_MODULES:
+        for flag in ("--proxy-block-retries", "--block-retries", "--retries"):
+            err = _io.StringIO()
+            with _ctx.redirect_stderr(err):
+                try:
+                    _parse(mod, ["--category", "crm", flag, "-1"])
+                except SystemExit as exc:
+                    assert exc.code == 2
+                else:
+                    raise AssertionError(f"{mod.__name__}: {flag} -1 was accepted")
+            assert "error:" in err.getvalue() and flag in err.getvalue(), err.getvalue()
+
+
+@check(".gitignore ignores every .env* copy (.env.bak, .env.local, .env.save) and keeps .env.example")
+def _():
+    if not (ROOT / ".git").exists():
+        return  # inside the Docker build there is no repository to ask
+    for name in (".env", ".env.bak", ".env.local", ".env.save"):
+        r = subprocess.run(["git", "check-ignore", "-q", name], cwd=ROOT)
+        assert r.returncode == 0, f"{name} is not ignored"
+    r = subprocess.run(["git", "check-ignore", "-q", ".env.example"], cwd=ROOT)
+    assert r.returncode == 1, ".env.example must not be ignored"
+
+
+@check("credential scan rules: an unquoted .env line, a bare 32-hex key, and a JSON-escaped apiKey are each caught; a venv is recognised by pyvenv.cfg whatever its name; smoke_test.py is not exempt from the key-shape rule")
+def _():
+    scanner = ROOT / ".github" / "ci_checks.py"
+    if not scanner.exists():
+        return  # stripped from the Docker build context on purpose
+    import importlib.util as _ilu
+    spec = _ilu.spec_from_file_location("ci_checks_under_test", scanner)
+    ci = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(ci)
+    key = "3f" * 16
+    assert ci.ENV_ASSIGNMENT.search(f"TWOCAPTCHA_KEY={key}")
+    assert ci.TWOCAPTCHA_KEY_SHAPE.search(f'key = "{key}"')
+    assert ci.SECRET_ASSIGNMENT.search('{\\"apiKey\\": \\"k9x2m4p7q1w8e5r3t6y0\\"}')
+    assert not ci.ENV_ASSIGNMENT.search("api_key = args.twocaptcha_key")
+    assert "twocaptcha_key_shape" not in ci.RULE_EXEMPTIONS.get("smoke_test.py", set())
+    with tempfile.TemporaryDirectory() as td:
+        ci.ROOT = Path(td)
+        (Path(td) / "myenv" / "lib").mkdir(parents=True)
+        (Path(td) / "myenv" / "pyvenv.cfg").write_text("home = /usr\n")
+        assert ci._inside_virtualenv("myenv/lib/vendored.py")
+        assert not ci._inside_virtualenv("src/vendored.py")
+
+
+@check("no shipped file cites the private instruction file or its section numbers (the public cannot open it; state the rule in the repo's own words)")
+def _():
+    if not (ROOT / ".git").exists():
+        return
+    banned = ("CLAUDE" + ".md", "claude_" + "2scraper", "2scraper_" + "repo_rules", "play" + "book", "\u00a7")
+    tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, check=True).stdout.split(b"\0")
+    hits = []
+    for raw in tracked:
+        if not raw:
+            continue
+        rel = raw.decode()
+        try:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError, IsADirectoryError):
+            continue
+        for token in banned:
+            if token in text:
+                hits.append(f"{rel}: {token!r}")
+    assert not hits, hits
 
 
 def run() -> int:

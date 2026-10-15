@@ -28,7 +28,7 @@ per function), so it cannot regress here unnoticed.
 
 **g2.com's confirmed defense is DataDome — corrected 2026-09-22: it IS
 solvable.** This repo originally claimed no automated solve path existed
-for it at all; that was wrong (Roman, from 2Captcha's own team, pointed at
+for it at all; that was wrong (see
 https://2captcha.com/api-docs/datadome-slider-captcha — a dedicated
 `DataDomeSliderTask`). `--solve-captcha` now attempts it when a slider
 challenge is detected, but it is the ONE type in this family with no
@@ -79,7 +79,7 @@ from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptcha
 
 ENGINE_NAME = "puppeteer"
 
-# --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
+# --- the handful of engine constants that vary per site ---
 NAV_TIMEOUT_MS = 30_000
 READINESS_WAIT_S = 1.5  # g2.com is server-rendered Rails/PJAX, not an SPA
                         # (confirmed — g2_parser.py): nothing has to hydrate
@@ -98,6 +98,7 @@ STILL_BLOCKED_ACTIONS = (
     "warning_solver_error",
     "detected_unidentified_widget",
     "unsupported_vendor",
+    "budget_exhausted",
 )
 
 log = logging.getLogger("puppeteer_scraper")
@@ -158,7 +159,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--proxy", default=None)
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=3)
+    p.add_argument("--proxy-block-retries", type=_nonnegative_int, default=3)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -198,8 +199,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
              "chaining two 2Captcha products together, not pointing this at a caller-supplied "
              "--cdp-endpoint (that flag stays ignored in --scraper-api mode, see its help text: an "
              "arbitrary CDP session isn't known to support this field the way 2Captcha's own does). "
-             "This is what actually gets --scraper-api real captcha auto-solve on g2.com's DataDome "
-             "challenge and exit-country pinning — see scraper_api_client.TwoCaptchaClient."
+             "Intended to give --scraper-api the Scraping Browser's own captcha auto-solve (UNVERIFIED "
+             "against g2.com's DataDome challenge) and exit-country pinning — see scraper_api_client.TwoCaptchaClient."
              "scraping_browser_connection_url and scrape_url's own docstrings for exactly what "
              "2Captcha documents. Requires --scraper-api. WIRED BUT NOT YET LIVE-TESTED: the "
              "underlying 'cdpurl' field is documented by 2Captcha but this codebase had never "
@@ -258,14 +259,14 @@ async def _launch(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
         try:
             return await pyppeteer_connect(browserWSEndpoint=cdp_endpoint, defaultViewport=None)
         except Exception as exc:
-            # CLAUDE.md §8: the endpoint (credentials included) is repeated
+            # the endpoint (credentials included) is repeated
             # in the driver's own exception text. Redact, and drop the
             # original from the chain so it cannot resurface via "the above
             # exception was the direct cause of…".
             raise RuntimeError(f"CDP connection failed: {redact_credentials(str(exc))}") from None
     args = ["--no-sandbox", "--disable-dev-shm-usage"]
     if proxy is not None:
-        # CLAUDE.md §3: the launch arg carries the SERVER only; the
+        # the launch arg carries the SERVER only; the
         # login/password go through page.authenticate() below, never argv.
         args.append(proxy.pyppeteer_launch_arg())
     kwargs = dict(headless=headless, args=args)
@@ -370,6 +371,8 @@ async def _maybe_solve_captcha(
         )
     elif action == "warning_solver_error":
         log.warning("Captcha solve failed: %s", result.get("detail"))
+    elif action == "budget_exhausted":
+        log.warning("Captcha solve NOT bought: %s -- reporting this page as blocked.", result.get("detail"))
     elif action == "solved":
         log.info("Captcha solved via 2Captcha (%s).", result.get("captcha_type"))
         if result.get("captcha_type") == CaptchaType.DATADOME_SLIDER.value:
@@ -436,8 +439,10 @@ async def _maybe_solve_captcha(
         # (corrected 2026-09-22 — see captcha_solver.py's module
         # docstring): it means DataDome's always-present tag was seen but
         # no slider iframe was on THIS page. For other vendors in this
-        # bucket (PerimeterX, a Cloudflare managed challenge) it still
-        # means "confirmed, no 2Captcha task type exists at all."
+        # bucket (PerimeterX, a Cloudflare managed challenge) it means this
+        # repo does not implement a solve path for that challenge -- the
+        # Cloudflare challenge-page interception and PerimeterX are not
+        # implemented here. It says nothing about what 2Captcha offers.
         log.warning(
             "%s marker present, no currently-solvable challenge found on this page — reporting "
             "this run as blocked. If this vendor is 'datadome' and a slider challenge was expected, "
@@ -461,7 +466,7 @@ async def _goto_with_retries(page, url: str, *, retries: int, retry_delay: float
                              proxy_pool: Optional[ProxyPool] = None, proxy: Optional[Proxy] = None,
                              ) -> Tuple[Optional[int], Optional[str]]:
     """Returns `(http_status, last_error)`. `last_error is not None` means
-    every attempt failed — a failed page, never a crash (CLAUDE.md §6)."""
+    every attempt failed — a failed page, never a crash."""
     last_error: Optional[str] = None
     status: Optional[int] = None
     for attempt in range(retries + 1):
@@ -495,7 +500,7 @@ async def scrape_category(
     """Paginate a category listing via `?page=N`. Returns
     `(products, blocked, remote_api_error, pages_completed, failed_pages)`.
 
-    CLAUDE.md §6: one page that fails to load or parse becomes a recorded
+    one page that fails to load or parse becomes a recorded
     failed page, never a crash that discards its siblings' rows."""
     blocked = False
     remote_api_error = False
@@ -575,8 +580,14 @@ async def scrape_category(
             continue
         last_html = html
 
-        if status == 404 and page_num > start_page:
-            log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
+        if status == 404:
+            # A 404 is "no such page", never a block: it is not retried, it
+            # rotates nothing, and it must not tell the reader to buy a proxy.
+            if page_num == start_page:
+                log.warning("Listing page %d returned HTTP 404 — g2.com has no such category; check "
+                            "--category/--url. Not a block, so not retried.", page_num)
+            else:
+                log.info("Listing probe page %d returned HTTP 404 — treating it as catalogue exhaustion.", page_num)
             break
         if status is not None and status >= 400:
             log.warning("Listing page %d returned HTTP %d — treating as blocked, not empty.", page_num, status)
@@ -628,6 +639,10 @@ async def scrape_category(
                 )
             else:
                 log.info("Listing page %d yielded zero cards — treating that as the end of the category.", page_num)
+            if blocked and page_num not in failed_pages:
+                # Recorded so a block on page 2+ after rows were gathered is
+                # reported as partial data with this page missing.
+                failed_pages.append(page_num)
             if page_num == start_page:
                 pages_completed += 1
             break
@@ -707,7 +722,11 @@ async def scrape_product_page(
             return [], True, False, 0, [1]
         return [], False, True, 0, [1]
 
-    if status is not None and status >= 400:
+    not_found = status == 404
+    if not_found:
+        log.warning("Product page returned HTTP 404 — g2.com has no product at this address; check "
+                    "--product/--url. Not a block, so not retried.")
+    elif status is not None and status >= 400:
         log.warning("Product page returned HTTP %d — treating as blocked, not empty.", status)
         blocked = True
 
@@ -743,12 +762,17 @@ async def scrape_product_page(
         Path(_dump_path(args.out)).write_text(html, encoding="utf-8")
     await browser.close()
 
-    if not products and not blocked:
+    if not products and not blocked and not not_found:
+        # A product URL names exactly one product, so a served page with no
+        # product data is a parser (or served-page) failure, not an empty
+        # result: page 1 goes into failed_pages and finish_run reports it as
+        # parser_found_nothing (exit 5) rather than "empty" (exit 4).
         log.warning(
             "Product page rendered but no usable SoftwareApplication JSON-LD was found (%s) — "
             "see g2_parser.parse_product_page(). Re-run with --dump-html to inspect the page.",
             gp.diagnose_unexpected_page(html),
         )
+        return products, blocked, False, 0, [1]
     return products, blocked, False, 1, []
 
 
@@ -781,7 +805,9 @@ async def scrape_pricing_page(
         log.warning("Pricing page failed to load: %s", last_error)
         return [], False, True
 
-    blocked = bool(status is not None and status >= 400)
+    if status == 404:
+        log.warning("Pricing page returned HTTP 404 — this product has no pricing page. Not a block.")
+    blocked = bool(status is not None and status >= 400 and status != 404)
     html = await page.content()
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS):
         captcha_result = await _maybe_solve_captcha(
@@ -914,12 +940,12 @@ def _scrape_via_scraper_api(
 ) -> Tuple[List[Product], bool, bool, int, List[int]]:
     """`--scraper-api`'s own fetch path — see playwright_scraper.py's copy
     of this function for the full rationale (identical logic, duplicated
-    per engine per this family's own convention, CLAUDE.md §4). One
+    per engine per this family's own convention). One
     browserless HTTP call via plain `requests` (nothing here needs
     `await`), no pagination loop, no live DOM to inject into. `cdp_url`,
     when --scraper-api-cdp set one (see run()), routes this fetch through
-    2Captcha's own Scraping Browser instead of their default pool — real
-    captcha auto-solve for DataDome and country pinning happen on
+    2Captcha's own Scraping Browser instead of their default pool — its own
+    auto-solve (unverified against g2.com's DataDome) and country pinning happen on
     2Captcha's side of that session, not in this function."""
     try:
         result = client.scrape_url(start_url, timeout=args.scraper_api_timeout, cdp_url=cdp_url)
@@ -932,7 +958,11 @@ def _scrape_via_scraper_api(
 
     html = result.body
     blocked = False
-    if result.target_status is not None and result.target_status >= 400:
+    not_found = result.target_status == 404
+    if not_found:
+        log.warning("Scraper API: target page returned HTTP 404 — no such page on g2.com; check "
+                    "the URL/slug. Not a block, so not retried.")
+    elif result.target_status is not None and result.target_status >= 400:
         log.warning("Scraper API: target page returned HTTP %d — treating as blocked.", result.target_status)
         blocked = True
 
@@ -943,9 +973,10 @@ def _scrape_via_scraper_api(
         products = [p for p in [gp.parse_product_page(html, url=start_url)] if p]
         if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS) and gp.count_product_page_data(html) == 0:
             blocked = True
-        if not products and not blocked:
+        if not products and not blocked and not not_found:
             log.warning("Product page fetched via Scraper API but no usable SoftwareApplication "
                         "JSON-LD was found (%s).", gp.diagnose_unexpected_page(html))
+            return products, blocked, False, 0, [1]
         return products, blocked, False, 1, []
 
     if mode == "pricing":
@@ -1005,7 +1036,7 @@ async def run(args: argparse.Namespace) -> int:
 
     if args.scraper_api:
         # A whole separate, browserless code path — no pyppeteer is needed
-        # at all here (CLAUDE.md §6), so the pyppeteer_launch-is-None check
+        # at all here, so the pyppeteer_launch-is-None check
         # below is skipped entirely.
         if not args.twocaptcha_key:
             print("Error: --scraper-api requires --twocaptcha-key/TWOCAPTCHA_KEY", file=sys.stderr)

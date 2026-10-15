@@ -38,6 +38,10 @@ except ImportError:  # pragma: no cover - exercised by the "no dotenv" path
 
 # variable -> argparse destination. Keep in exact sync with .env.example;
 # a test asserts the two sets are equal in both directions.
+# argparse destinations that BUILD the target URL; when the caller typed one
+# of them, G2_URL is not applied (see apply_env).
+URL_BUILDER_DESTS = ("category", "product")
+
 ENV_KEYS: Dict[str, str] = {
     "TWOCAPTCHA_KEY": "twocaptcha_key",
     "G2_PROXY": "proxy",
@@ -46,7 +50,7 @@ ENV_KEYS: Dict[str, str] = {
 }
 
 _PLACEHOLDER_RE = re.compile(r"^\s*$")
-# CLAUDE.md §17: a copied .env.example can document a credentialled URL the
+# a copied .env.example can document a credentialled URL the
 # way the vendor documents it — `ws://{login}-zone-...-pid-{profileId}:
 # {password}@cb.2captcha.com:9222` — and a literal-placeholder check (an
 # exact string like "your_key_here") never matches that shape, so pasting
@@ -62,9 +66,8 @@ _BRACED_PLACEHOLDER_RE = re.compile(r"[{}]")
 
 
 def _is_placeholder(value: Optional[str]) -> bool:
-    """One implementation, used by both apply_env() and _report() — CLAUDE.md
-    §17 names the alternative (two independent checks that quietly drift
-    apart) as its own defect class. True for an empty value, or one that
+    """One implementation, used by both apply_env() and _report(): two
+    independent checks for the same thing quietly drift apart. True for an empty value, or one that
     still contains a `{...}` example fragment."""
     if value is None:
         return True
@@ -104,8 +107,24 @@ def apply_env(args: argparse.Namespace, dotenv_path: str = ".env") -> argparse.N
     is never touched, per the precedence rule above.
     """
     dotenv_values = load_dotenv_values(dotenv_path)
+    # Which target-builder flags did the caller TYPE? Captured before any
+    # value is filled in, because afterwards a typed --url and an
+    # environment one look the same. A typed --category/--product must win
+    # over G2_URL from the environment or .env: --url outranks the builder
+    # flags, so filling it from G2_URL would silently scrape a different
+    # target than the one on the command line.
+    typed_builders = [
+        flag for flag in URL_BUILDER_DESTS if getattr(args, flag, None) not in (None, "")
+    ]
     for env_key, dest in ENV_KEYS.items():
         if not hasattr(args, dest) or getattr(args, dest) not in (None, ""):
+            continue
+        if dest == "url" and typed_builders:
+            if os.environ.get(env_key) or dotenv_values.get(env_key):
+                log.info(
+                    "%s is set but --%s was given on the command line — using --%s and "
+                    "ignoring %s.", env_key, typed_builders[0], typed_builders[0], env_key,
+                )
             continue
         # exported environment variable outranks .env
         value = os.environ.get(env_key)

@@ -90,6 +90,44 @@ class ScrapeResult:
     body: str
 
 
+# How many paid captcha solves one page (one requested URL) may buy over a
+# whole run. Kept per CLIENT, and every engine creates exactly one client per
+# run, outside its --block-retries loop, so the allowance survives a retry,
+# a fresh browser context and a proxy rotation alike: a new exit is a reason
+# to re-fetch, not a fresh allowance. Measured before this existed: one
+# blocked listing page bought 3 solves at the default --block-retries 2, and
+# 6 at --block-retries 5.
+SOLVES_PER_PAGE = 1
+
+
+class SolveBudget:
+    """Per-page allowance for paid solves, checked BEFORE each purchase."""
+
+    def __init__(self, per_page: int = SOLVES_PER_PAGE):
+        self.per_page = per_page
+        self._spent: dict = {}
+
+    @staticmethod
+    def _key(page_url: str) -> str:
+        return (page_url or "").split("#", 1)[0]
+
+    def remaining(self, page_url: str) -> int:
+        return max(0, self.per_page - self._spent.get(self._key(page_url), 0))
+
+    def spend(self, page_url: str) -> bool:
+        """Reserve one solve for `page_url`. False means the allowance is
+        used up and nothing may be bought."""
+        key = self._key(page_url)
+        if self._spent.get(key, 0) >= self.per_page:
+            return False
+        self._spent[key] = self._spent.get(key, 0) + 1
+        return True
+
+    @property
+    def total_spent(self) -> int:
+        return sum(self._spent.values())
+
+
 class TwoCaptchaClient:
     def __init__(
         self, api_key: Optional[str], timeout: int = 30, api_base: Optional[str] = None,
@@ -99,7 +137,7 @@ class TwoCaptchaClient:
         self.timeout = timeout
         # `--captcha-api` (testing only): override the base URL so a smoke
         # test or a local run can point this at a mock server instead of
-        # the real https://api.2captcha.com. CLAUDE.md §17 names the exact
+        # the real https://api.2captcha.com. This guards the exact
         # failure mode this guards against — a CLI flag defined on the
         # parser but never read by anything is "a documented feature not
         # working at all", found live in this family more than once.
@@ -111,6 +149,9 @@ class TwoCaptchaClient:
         # (`scraper.2captcha.com`), not `api.2captcha.com`. `--scraper-api-
         # url` (testing only) sets this; `--captcha-api` above never does.
         self.scraper_api_base = scraper_api_base or SCRAPER_API_BASE
+        # One allowance per run (see SolveBudget); captcha_solver.solve_when_blocked
+        # spends from it before every createTask.
+        self.solve_budget = SolveBudget()
 
     def _require_key(self) -> str:
         if not self.api_key:
@@ -235,8 +276,8 @@ class TwoCaptchaClient:
         # Unlike createTask/getTaskResult/getBalance above, this endpoint
         # takes its key as a URL query parameter (`?key=...`), not a JSON
         # body — and `requests` puts the FULL URL, query string included,
-        # into the text of every HTTPError and connection error (CLAUDE.md
-        # §8 names this exact endpoint). Redact before raising, and drop
+        # into the text of every HTTPError and connection error, and this
+        # endpoint takes its key as a query parameter. Redact before raising, and drop
         # the original exception from the chain (`from None`) so its own
         # unredacted text can't surface via "the above exception was the
         # direct cause of…".
@@ -281,8 +322,9 @@ class TwoCaptchaClient:
         product to 2Captcha's OWN Scraping Browser, not a caller-supplied
         `--cdp-endpoint` (kept separate on purpose: an arbitrary CDP
         session isn't known to support this field the way 2Captcha's own
-        does) — which is what gets this endpoint real captcha auto-solve
-        for DataDome (this endpoint alone has none) and the country
+        does) — intended to give this endpoint the Scraping Browser's own
+        captcha auto-solve (this endpoint alone has none; whether it clears
+        g2.com's DataDome is unverified) and the country
         pinning described in the module docstring. Documented by
         2Captcha; a real caller now exists (`--scraper-api-cdp`), but
         neither this client nor any engine has exercised it against a
