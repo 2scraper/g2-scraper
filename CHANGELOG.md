@@ -6,6 +6,12 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: both canary jobs bill a paid route (`G2_PROXY`, `G2_CDP_ENDPOINT`),
+  so the canary now runs weekly (Mondays 07:17 UTC) instead of daily; a manual
+  dispatch still runs it.
+
 ## [0.2.0] - 2026-10-15
 
 > **Behaviour changes for existing scripts (2026-10-14).** Exit codes:

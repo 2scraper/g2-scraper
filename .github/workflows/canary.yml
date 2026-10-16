@@ -2,7 +2,7 @@ name: canary
 
 on:
   schedule:
-    - cron: "17 7 * * *"   # once daily; avoid :00 so it doesn't pile up with everyone else's
+    - cron: "17 7 * * 1"   # weekly, Mondays (every run bills the proxy or Scraping Browser); avoid :00 so it doesn't pile up with everyone else's
   workflow_dispatch: {}     # dispatch manually at least once before trusting the badge
 
 jobs:
