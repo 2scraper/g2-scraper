@@ -77,8 +77,11 @@ from captcha_solver import (
     CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
 )
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
-from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, sku_key as _sku_key
-from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
+from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, precheck_or_stop, sku_key as _sku_key
+from proxy_pool import (
+    Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials,
+    selenium_block_media, should_block_media,
+)
 from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptchaError
 
 ENGINE_NAME = "selenium"
@@ -171,6 +174,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-shuffle", action="store_true")
     p.add_argument("--proxy-block-retries", type=_nonnegative_int, default=3)
+    p.add_argument("--load-media", action="store_true",
+                   help="Load images, video and web fonts. By default they are blocked by file extension "
+                        "while a LOCAL browser goes through --proxy/--proxy-file (no parser "
+                        "reads them, and a proxy bills per byte); never blocked with "
+                        "--cdp-endpoint or with no proxy.")
+    p.add_argument("--force-block-media", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -267,7 +276,8 @@ def _cdp_endpoint_has_credentials(cdp_endpoint: str) -> bool:
     return bool(parts.username or parts.password)
 
 
-def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optional[str], user_agent: Optional[str] = None):
+def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optional[str], user_agent: Optional[str] = None,
+                  block_media: bool = False):
     options = Options()
     if headless:
         options.add_argument("--headless=new")
@@ -299,7 +309,15 @@ def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
         service = Service()  # Selenium Manager: resolves/downloads over the network
     else:
         service = None
-    return webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+    driver = webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+    driver.media_blocked = False
+    if block_media:
+        # By URL pattern: Selenium has no request events, only
+        # Network.setBlockedURLs, so an image served without a file
+        # extension still loads. --load-media keeps everything.
+        selenium_block_media(driver)
+        driver.media_blocked = True
+    return driver
 
 
 # Selenium has no driver-native Response object for a navigation, so the
@@ -546,7 +564,9 @@ def scrape_category(
     start_page = gp.page_number_from_url(start_url) if slug else 1
     proxy = proxy_pool.next() if proxy_pool else None
     log.info("Using proxy %s", proxy.masked() if proxy else "(no local proxy pool — direct connection, or a --cdp-endpoint session providing its own exit)")
-    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
+    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent,
+                           block_media=should_block_media(args, proxy_in_use=proxy is not None,
+                                                          over_cdp=bool(args.cdp_endpoint)))
 
     seen_skus: set = set()
     pages: List[List[Product]] = []
@@ -715,7 +735,9 @@ def scrape_product_page(
     `SoftwareApplication` JSON-LD. Same 5-tuple as scrape_category()."""
     blocked = False
     proxy = proxy_pool.next() if proxy_pool else None
-    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
+    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent,
+                           block_media=should_block_media(args, proxy_in_use=proxy is not None,
+                                                          over_cdp=bool(args.cdp_endpoint)))
 
     try:
         status, last_error = _goto_with_retries(
@@ -874,7 +896,9 @@ def scrape_pricing_only(
     load and captcha handling to scrape_pricing_page(), and shapes the
     result into run()'s uniform 5-tuple."""
     proxy = proxy_pool.next() if proxy_pool else None
-    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
+    driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent,
+                           block_media=should_block_media(args, proxy_in_use=proxy is not None,
+                                                          over_cdp=bool(args.cdp_endpoint)))
     try:
         tiers, blocked, remote_api_error = scrape_pricing_page(
             args=args, start_url=start_url, driver=driver, client=client,
@@ -1093,6 +1117,22 @@ def run(args: argparse.Namespace) -> int:
     if args.cdp_endpoint and proxy_pool is not None:
         log.warning("Ignoring --proxy: a --cdp-endpoint session already carries its own exit IP.")
         proxy_pool = None
+
+    # One HEAD for robots.txt through the proxy BEFORE any browser starts:
+    # a gateway 407/402 ends the run here (exit 5) instead of launching a
+    # browser whose every request would be refused, and is not rotated away.
+    if proxy_pool is not None and not args.cdp_endpoint:
+        first = proxy_pool.peek()
+        stopped = precheck_or_stop(
+            first.server_only() if first else None, args=args, start_url=start_url, engine=ENGINE_NAME,
+            pages_requested=args.max_pages if mode == "category" else 1,
+            started_at=started_at, env_var="G2_PROXY", site="g2.com",
+            note=("selenium_scraper.py sends NO proxy credentials (Chromium's "
+                  "--proxy-server cannot carry them); playwright_scraper.py "
+                  "authenticates properly.") if first and first.has_auth else None,
+        )
+        if stopped is not None:
+            return stopped
 
     client = None
     if args.twocaptcha_key and (args.solve_captcha != "off" or args.fingerprint):
