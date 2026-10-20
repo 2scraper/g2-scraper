@@ -6,6 +6,19 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+> **Behaviour change.** A run whose first page never loaded through a proxy
+> pool on every `--block-retries` attempt now ends `remote_api_error`, exit
+> 5, instead of `blocked`, exit 3. Rotation is unchanged: each attempt still
+> moves to the next exit. A real block or challenge on the last attempt is
+> still exit 3.
+
+### Fixed
+
+- A first page that timed out through the proxy on every attempt was reported
+  as a site block (exit 3), even though the site never answered. A proxy that rejects its credential (HTTP 407) shows
+  up in Chromium as exactly this navigation timeout. All three engines now
+  report it as content never obtained.
+
 ### Changed
 
 - CI only: both canary jobs bill a paid route (`G2_PROXY`, `G2_CDP_ENDPOINT`),

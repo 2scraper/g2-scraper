@@ -77,7 +77,7 @@ from captcha_solver import (
     CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
 )
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
-from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run, merge_pages, sku_key as _sku_key
+from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, sku_key as _sku_key
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
 from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptchaError
 
@@ -582,7 +582,7 @@ def scrape_category(
                         # report_failure(dead=True); a generic timeout
                         # isn't one of those and stays in rotation for a
                         # later attempt.
-                        blocked = True
+                        blocked = LOAD_FAILED
                         break
                     # No alternative identity exists (no proxy pool, or a
                     # --cdp-endpoint session providing its own exit) —
@@ -725,7 +725,7 @@ def scrape_product_page(
         if last_error is not None:
             log.error("Product page permanently failed to load: %s", last_error)
             if proxy_pool is not None and proxy is not None:
-                return [], True, False, 0, [1]
+                return [], LOAD_FAILED, False, 0, [1]
             return [], False, True, 0, [1]
 
         not_found = status == 404
@@ -889,7 +889,7 @@ def scrape_pricing_only(
         driver.quit()
     products = _pricing_only_product(start_url, tiers)
     if remote_api_error and proxy_pool is not None and proxy is not None:
-        blocked, remote_api_error = True, False
+        blocked, remote_api_error = LOAD_FAILED, False
     if not products and not blocked and not remote_api_error:
         log.warning(
             "Pricing page returned no recognisable tier lines — g2.com ships no pricing JSON-LD, "
@@ -1127,7 +1127,7 @@ def run(args: argparse.Namespace) -> int:
                 break
             if block_attempt < args.block_retries:
                 log.warning(
-                    "Blocked with zero products (attempt %d/%d) — retrying; a proxy pool advances to its next live exit.",
+                    "Blocked, or the first page never loaded, with zero products (attempt %d/%d) — retrying; a proxy pool advances to its next live exit.",
                     block_attempt + 1, args.block_retries + 1,
                 )
                 time.sleep(args.retry_delay)
