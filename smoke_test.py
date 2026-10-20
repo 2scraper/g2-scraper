@@ -456,9 +456,9 @@ def _():
 def _():
     for path in ENGINE_FILES:
         src = (ROOT / path).read_text(encoding="utf-8")
-        assert "if proxy_pool is not None and proxy is not None:" in src and "blocked = True" in src, (
+        assert "if proxy_pool is not None and proxy is not None:" in src and "blocked = LOAD_FAILED" in src, (
             f"{path}: scrape_category()'s first-page-navigation-failure branch must check for a live "
-            f"proxy_pool and set blocked=True (letting --block-retries rotate) rather than always "
+            f"proxy_pool and set blocked=LOAD_FAILED (letting --block-retries rotate) rather than always "
             f"declaring remote_api_error"
         )
         # The two branches must both still exist, in this order: rotate-if-
@@ -487,7 +487,7 @@ def _():
             f"{path}: standalone product navigation failure does not distinguish a rotatable "
             f"proxy pool from a fixed/direct identity"
         )
-        assert "return [], True, False, 0, [1]" in product_section, (
+        assert "return [], LOAD_FAILED, False, 0, [1]" in product_section, (
             f"{path}: standalone product mode must report a dead pooled proxy as blocked so the "
             f"outer retry loop advances the pool"
         )
@@ -2144,6 +2144,61 @@ def _():
                 if not (blocked and not merged):
                     break
             assert client.purchases == 1, (block_retries, client.purchases)
+
+
+class _TimeoutPage(_FakePage):
+    async def goto(self, url, **_kw):
+        self.gotos += 1
+        raise TimeoutError("Page.goto: Timeout 30000ms exceeded.")
+
+
+class _TimeoutBrowser(_FakeBrowser):
+    async def new_context(self, **_kw):
+        context = _FakeContext(self)
+
+        async def new_page():
+            page = _TimeoutPage(self.answers, context)
+            self.pages.append(page)
+            return page
+        context.new_page = new_page
+        return context
+
+
+@check("a first page that never loads through a proxy pool still rotates on every --block-retries attempt, and when the LAST attempt also never loaded the run ends as remote_api_error (exit 5), not blocked (exit 3): the site never answered. Seen 2026-10-20: a proxy refusing its credential produced only navigation timeouts and the run reported a block")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        args = _pw_args(["--category", "crm", "--max-pages", "1", "--block-retries", "2", "--retries", "0"], td)
+        proxies = proxy_pool.load_proxies("http://login:password@10.0.0.1:8080", None)
+        pool = proxy_pool.ProxyPool(proxies, block_retries=100)
+        browser = _TimeoutBrowser([(200, "")])
+        attempts = 0
+        for _attempt in range(args.block_retries + 1):  # the same loop run() uses
+            attempts += 1
+            merged, blocked, remote_api_error, pages_completed, failed_pages = asyncio.run(
+                playwright_scraper.scrape_category(
+                    args=args, start_url=gp.category_url("crm"), browser=browser, proxy_pool=pool,
+                    client=None, autosolve=False, user_agent=None,
+                ))
+            if not (blocked and not merged):
+                break
+        assert attempts == 3, f"a load failure must keep rotating through --block-retries, stopped after {attempts}"
+        assert blocked == output_writer.LOAD_FAILED and not remote_api_error, (blocked, remote_api_error)
+        out = str(Path(td) / "out.json")
+        code = output_writer.finish_run(
+            products=merged, out_path=out, fmt="json", engine="test", url="u",
+            pages_requested=1, pages_completed=pages_completed, failed_pages=failed_pages,
+            blocked=blocked, remote_api_error=remote_api_error, allow_empty=True, started_at=0.0,
+        )
+        assert code == output_writer.EXIT_REMOTE_API_ERROR, code
+        meta = json.loads(Path(f"{out}.meta.json").read_text())
+        assert meta["status"] == "remote_api_error" and meta["stop_reason"] == "remote_api_error", meta
+        # A real block on the last attempt is still exit 3.
+        code = output_writer.finish_run(
+            products=[], out_path=str(Path(td) / "b.json"), fmt="json", engine="test", url="u",
+            pages_requested=1, pages_completed=0, failed_pages=[1],
+            blocked=True, remote_api_error=False, allow_empty=True, started_at=0.0,
+        )
+        assert code == output_writer.EXIT_BLOCKED, code
 
 
 @check("paid-solve budget is checked inside solve_when_blocked BEFORE the purchase: a second call for the same page returns budget_exhausted without calling solve_and_wait, another page still gets its own allowance")

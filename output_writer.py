@@ -41,6 +41,13 @@ EXIT_ZERO_PRODUCTS = 4
 EXIT_REMOTE_API_ERROR = 5
 EXIT_PARTIAL = 6
 
+# A first-page navigation failure through a proxy pool is returned as this
+# (truthy) value of `blocked`, so the --block-retries loop rotates to the next
+# exit exactly as it does for a block. If the LAST attempt still ended this
+# way, the site never answered at all: finish_run() reports that as
+# remote_api_error (exit 5), not as a site refusal (exit 3).
+LOAD_FAILED = "load_failed"
+
 STATUS_BY_EXIT = {
     EXIT_OK: "complete",
     EXIT_CRASH: "crashed",
@@ -404,6 +411,8 @@ def finish_run(
     `--allow-empty` controls only whether a zero-row result gets WRITTEN;
     it never changes the status.
     """
+    if blocked == LOAD_FAILED:
+        blocked, remote_api_error = False, True
     failed_pages = failed_pages or []
     zero_products = len(products) == 0
 
