@@ -359,6 +359,76 @@ def write_meta(
         f.write(json.dumps(meta, ensure_ascii=False, indent=2))
 
 
+ATTEMPT_META_SUFFIX = ".latest_attempt.meta.json"
+
+
+def write_failed_attempt(
+    out_path: str,
+    *,
+    stop_reason: str,
+    engine: str,
+    url: str,
+    pages_requested: int,
+    started_at: float,
+    transport_error: str,
+) -> str:
+    """Record a run that ended before finish_run() could, e.g. because the
+    proxy gateway refused the pre-check. Writes ONLY
+    `<out>.latest_attempt.meta.json`: `<out>` and `<out>.meta.json` from an
+    earlier good run stay as they were, so the two never contradict."""
+    meta = {
+        "status": "failed",
+        "stop_reason": stop_reason,
+        "engine": engine,
+        "url": url,
+        "pages_requested": pages_requested,
+        "pages_completed": 0,
+        "failed_pages": [],
+        "product_count": 0,
+        "started_at": started_at,
+        "finished_at": time.time(),
+        "transport_error": transport_error,
+        "data_updated": False,
+    }
+    path = f"{out_path}{ATTEMPT_META_SUFFIX}"
+    with _atomic(path) as f:
+        f.write(json.dumps(meta, ensure_ascii=False, indent=2))
+    return path
+
+
+def precheck_or_stop(
+    proxy_url: Optional[str],
+    *,
+    args: Any,
+    start_url: str,
+    engine: str,
+    pages_requested: int,
+    started_at: float,
+    env_var: str,
+    site: str,
+    note: Optional[str] = None,
+) -> Optional[int]:
+    """The proxy pre-check every browser engine runs before launching:
+    one HEAD for the start URL's robots.txt through `proxy_url`. Returns
+    EXIT_REMOTE_API_ERROR after a gateway 407/402 (message printed, attempt
+    sidecar written), or None to carry on — any other outcome, a transport
+    error included, is not a verdict on the proxy."""
+    import proxy_pool
+    try:
+        proxy_pool.precheck_proxy(proxy_url, proxy_pool.robots_url(start_url), timeout=20)
+    except proxy_pool.ProxyPrecheckError as exc:
+        print(proxy_pool.precheck_message(exc, env_var, site), file=sys.stderr)
+        if note:
+            print(f"    {note}", file=sys.stderr)
+        write_failed_attempt(
+            args.out, stop_reason=proxy_pool.PROXY_PRECHECK_STOP_REASON, engine=engine,
+            url=start_url, pages_requested=pages_requested, started_at=started_at,
+            transport_error=f"proxy pre-check: {exc}",
+        )
+        return EXIT_REMOTE_API_ERROR
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # finish_run — the single place every engine calls to decide exit code,
 # whether to write output at all, and whether to write a sidecar. Keeping

@@ -89,7 +89,7 @@ exit `2` rather than fetched and discarded.
 
 ### Flags
 
-All three engines expose the identical 32 flags (`--headless`/`--headful`
+All three engines expose the identical 33 flags (`--headless`/`--headful`
 counted as one toggle).
 
 **Target**
@@ -145,6 +145,7 @@ counted as one toggle).
 | `--proxy-file` | — | One proxy per line, same formats |
 | `--proxy-shuffle` | off | |
 | `--proxy-block-retries` | `3` | Per-exit failure budget before the pool drops an exit |
+| `--load-media` | off | Load images, video and web fonts through the proxy too. By default a local browser behind `--proxy`/`--proxy-file` blocks them — see [Traffic savers](#traffic-savers-pre-check-and-media-blocking) |
 
 **Captcha and 2Captcha APIs**
 
@@ -194,7 +195,8 @@ product_slug, vendor_id, category_id, product_type
 **Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked
 (nothing gathered) · `4` zero products (nothing written; also a target that
 answers HTTP 404, which is not retried) · `5` the content was never obtained:
-a remote API error, a navigation failure, or a served page that parsed to
+a remote API error, a navigation failure, a proxy gateway that refused the
+pre-check with 407/402 (`stop_reason: proxy_auth_failed`), or a served page that parsed to
 nothing (`parser_found_nothing`, e.g. a product page with no product data) ·
 `6` partial: rows were gathered and then a page failed, was blocked or hit a
 remote error. CSV output prefixes formula-shaped text cells (`=`, `+`, `-`,
@@ -255,6 +257,48 @@ Real, stated limits (properties of the drivers, not of g2.com):
 - Install **exactly one** engine per environment: Playwright and pyppeteer
   declare mutually unsatisfiable `pyee` pins, and pyppeteer collides with
   Selenium's `urllib3` pin. Use a separate venv per engine.
+
+## Traffic savers: pre-check and media blocking
+
+Both apply only to a browser this repo launches itself behind `--proxy` /
+`--proxy-file`. Neither applies with `--cdp-endpoint` or `--scraper-api`
+(those bring their own exit and are configured on 2Captcha's side), or with
+no proxy at all, where nothing is metered.
+
+**Pre-check.** Before any browser starts, each engine sends ONE
+`HEAD https://www.g2.com/robots.txt` through the first exit the run will use.
+Selenium sends it without credentials, because its browser cannot send them
+either (see Engines), so the pre-check sees exactly what the browser will see.
+
+- A gateway `407` (the credential was refused, or the traffic balance is
+  exhausted) or `402` (traffic/balance exhausted) ends the run with **exit 5**.
+  The message names `G2_PROXY` and never prints its value. The exit is not
+  rotated away.
+- No browser is started, and `<out>.latest_attempt.meta.json` records
+  `status: failed`, `stop_reason: proxy_auth_failed`. `<out>` and
+  `<out>.meta.json` from an earlier run are left as they were.
+- Any other answer (a 403 from the site, a timeout, an unreachable proxy or a
+  `socks5://` proxy) is not a verdict, and the run continues exactly as
+  before, rotation included.
+
+**Media blocking.** Behind a local proxy, images, video/audio and web fonts
+are not downloaded. No parser here reads them: `image_url` comes from the
+card's `<img>` attributes and the JSON-LD, not from a loaded image.
+`--load-media` turns this off.
+
+| Engine | How | Limitation |
+|---|---|---|
+| Playwright | `context.route` aborts the `image`, `media` and `font` resource types | While a route is installed Playwright turns off its HTTP cache, so a run of many pages re-fetches the scripts and styles it would otherwise have cached |
+| pyppeteer | CDP `Fetch.enable` pauses only `Image`/`Media`/`Font` requests, and fails each one | – |
+| Selenium | CDP `Network.setBlockedURLs` by file extension (`*.jpg`, `*.webp`, `*.mp4`, `*.woff2`, …) | An image served from a URL without an extension still loads |
+
+Measured 2026-10-20 against a local stub page holding a png, a jpg, a woff2,
+an mp4 and a script. Without blocking, every engine fetched all of them. With
+blocking, Playwright and Selenium fetched only the page and the script, and
+pyppeteer fetched the page, the script and `/favicon.ico`. A live comparison
+against g2.com was not possible that day: from a datacentre address, both
+the plain run and the run with blocking forced (Playwright, no proxy,
+`--category crm --max-pages 1`) got HTTP 403 on page 1 (exit 3).
 
 ## Known limitations
 

@@ -2087,6 +2087,11 @@ class _FakePage:
 class _FakeContext:
     def __init__(self, browser):
         self.browser = browser
+        self.routes = []
+
+    async def route(self, pattern, handler):
+        # Media blocking installs one behind a proxy pool.
+        self.routes.append((pattern, handler))
 
     async def new_page(self):
         page = _FakePage(self.browser.answers, self)
@@ -2458,6 +2463,318 @@ def _():
             if token in text:
                 hits.append(f"{rel}: {token!r}")
     assert not hits, hits
+
+
+# --------------------------------------------------------------------------- #
+# Traffic savers: the proxy pre-check and media blocking
+# --------------------------------------------------------------------------- #
+def _status_proxy(status):
+    """A local stand-in for a proxy gateway that answers every request,
+    CONNECT included, with `status`. Returns (server, port, hits)."""
+    import http.server
+    import socketserver
+    import threading
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self):
+            hits.append((self.command, self.path))
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.send_header("Proxy-Authenticate", 'Basic realm="stub"')
+            self.end_headers()
+        do_CONNECT = do_GET = do_HEAD = _answer
+
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, server.server_address[1], hits
+
+
+class _BrowserStarted(Exception):
+    """Raised by a fake driver launch: the run got past the pre-check."""
+
+
+def _with_fake_drivers(fn):
+    """Run fn(started) with every engine's driver entry point replaced by a
+    fake that records the launch and raises _BrowserStarted. Restored after."""
+    import contextlib
+    import io
+    import logging
+    started = []
+
+    class _PW:
+        async def __aenter__(self):
+            started.append("playwright")
+            raise _BrowserStarted()
+
+        async def __aexit__(self, *a):
+            return False
+
+    async def _pyp(**_kw):
+        started.append("puppeteer")
+        raise _BrowserStarted()
+
+    class _Chrome:
+        def __init__(self, **_kw):
+            started.append("selenium")
+            raise _BrowserStarted()
+
+    class _Opts:
+        def __init__(self):
+            self.debugger_address = None
+            self.binary_location = None
+
+        def add_argument(self, _a):
+            pass
+
+    saved = {
+        (playwright_scraper, "async_playwright"): playwright_scraper.async_playwright,
+        (puppeteer_scraper, "pyppeteer_launch"): puppeteer_scraper.pyppeteer_launch,
+        (puppeteer_scraper, "pyppeteer_connect"): puppeteer_scraper.pyppeteer_connect,
+        (selenium_scraper, "webdriver"): selenium_scraper.webdriver,
+        (selenium_scraper, "Options"): selenium_scraper.Options,
+        (selenium_scraper, "Service"): selenium_scraper.Service,
+    }
+    playwright_scraper.async_playwright = lambda: _PW()
+    puppeteer_scraper.pyppeteer_launch = puppeteer_scraper.pyppeteer_connect = _pyp
+    selenium_scraper.webdriver = type("wd", (), {"Chrome": _Chrome})
+    selenium_scraper.Options, selenium_scraper.Service = _Opts, None
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    buf = io.StringIO()
+    root.handlers = [logging.StreamHandler(buf)]
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            return fn(started, buf)
+    finally:
+        root.handlers = saved_handlers
+        for (mod, name), value in saved.items():
+            setattr(mod, name, value)
+
+
+_SECRET_UP = "user" + ":S3cretPw@"
+
+
+@check("proxy pre-check: on a gateway 407 or 402 each engine exits 5 BEFORE any browser starts, after exactly ONE request (CONNECT to www.g2.com:443 for robots.txt), names G2_PROXY without printing the credential, writes only <out>.latest_attempt.meta.json (failed / proxy_auth_failed), and leaves no data or dataset sidecar")
+def _():
+    for mod in ENGINE_MODULES:
+        for status, words in ((407, "refused the credential"), (402, "balance exhausted")):
+            server, port, hits = _status_proxy(status)
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    out = str(Path(td) / "out.json")
+                    args = _parse(mod, ["--category", "crm", "--out", out,
+                                        "--proxy", "http://" + _SECRET_UP + "127.0.0.1:%d" % port])
+
+                    def go(started, buf, args=args):
+                        return asyncio_run_maybe(mod, args), list(started), buf.getvalue()
+                    code, started, text = _with_fake_drivers(go)
+                    label = f"{mod.__name__} {status}"
+                    assert code == output_writer.EXIT_REMOTE_API_ERROR, (label, code)
+                    assert started == [], (label, started)
+                    assert hits == [("CONNECT", "www.g2.com:443")], (label, hits)
+                    assert words in text and "G2_PROXY" in text, (label, text[-400:])
+                    assert "S3cretPw" not in text, label
+                    assert sorted(p.name for p in Path(td).iterdir()) == ["out.json.latest_attempt.meta.json"], (
+                        label, sorted(p.name for p in Path(td).iterdir()))
+                    meta = json.loads((Path(td) / "out.json.latest_attempt.meta.json").read_text())
+                    assert (meta["status"], meta["stop_reason"], meta["data_updated"]) == (
+                        "failed", "proxy_auth_failed", False), (label, meta)
+                    assert "S3cretPw" not in json.dumps(meta), label
+                    if mod is selenium_scraper:
+                        assert "sends NO proxy credentials" in text, text[-400:]
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+@check("proxy pre-check: a 403 through the tunnel, an unreachable proxy, no proxy at all, and --cdp-endpoint are NOT a verdict on the proxy — every engine goes on to start its browser exactly as before (and no pre-check request is sent without a local proxy)")
+def _():
+    real = proxy_pool.precheck_proxy
+    for mod in ENGINE_MODULES:
+        server, port, hits = _status_proxy(403)
+        try:
+            args = _parse(mod, ["--category", "crm", "--out", "/nonexistent/o.json", "--retries", "0",
+                                "--block-retries", "0", "--proxy", "http://127.0.0.1:%d" % port])
+            started = _with_fake_drivers(lambda s, b, args=args: (asyncio_run_maybe(mod, args), list(s))[1])
+            assert started and len(hits) == 1, (mod.__name__, "403", started, hits)
+        finally:
+            server.shutdown()
+            server.server_close()
+        args = _parse(mod, ["--category", "crm", "--out", "/nonexistent/o.json", "--retries", "0",
+                            "--block-retries", "0", "--proxy", "http://127.0.0.1:1"])
+        started = _with_fake_drivers(lambda s, b, args=args: (asyncio_run_maybe(mod, args), list(s))[1])
+        assert started, (mod.__name__, "unreachable")
+
+        def _forbidden(*_a, **_k):
+            raise AssertionError("pre-check sent")
+        proxy_pool.precheck_proxy = _forbidden
+        try:
+            for extra in ([], ["--proxy", "http://127.0.0.1:1", "--cdp-endpoint", "http://127.0.0.1:1"]):
+                args = _parse(mod, ["--category", "crm", "--out", "/nonexistent/o.json", "--retries", "0",
+                                    "--block-retries", "0"] + extra)
+                started = _with_fake_drivers(lambda s, b, args=args: (asyncio_run_maybe(mod, args), list(s))[1])
+                assert started, (mod.__name__, extra, "a pre-check was sent or the browser never started")
+        finally:
+            proxy_pool.precheck_proxy = real
+    assert proxy_pool.robots_url("https://u" + ":p@www.g2.com/categories/crm?page=2") == "https://www.g2.com/robots.txt"
+    assert proxy_pool.precheck_proxy("socks5://127.0.0.1:1", "https://www.g2.com/robots.txt") is None
+
+
+@check("proxy pre-check probes the exit the run will use first: ProxyPool.peek() is next() without advancing, and Proxy.url() keeps (URL-quoted) credentials for the HTTP client")
+def _():
+    pool = proxy_pool.ProxyPool(proxy_pool.load_proxies(None, None) + [
+        proxy_pool.parse_proxy_line("http://a:b@10.0.0.1:1"), proxy_pool.parse_proxy_line("10.0.0.2:2")])
+    first = pool.peek()
+    assert first is pool.peek() and pool.next() is first and pool.peek().host == "10.0.0.2"
+    assert proxy_pool.parse_proxy_line("10.0.0.3:3:lo:g#n%1").url() == "http://lo:g%23n%251@10.0.0.3:3"
+    assert proxy_pool.parse_proxy_line("10.0.0.4:4").url() == "http://10.0.0.4:4"
+    assert proxy_pool.ProxyPool([]).peek() is None
+
+
+@check("media blocking policy: blocked behind a local proxy; --load-media keeps it; nothing with no proxy or over CDP; the hidden --force-block-media forces it; the Playwright route aborts image/media/font and continues everything else")
+def _():
+    from argparse import Namespace as ns
+    sb = proxy_pool.should_block_media
+    assert sb(ns(load_media=False), proxy_in_use=True)
+    assert not sb(ns(load_media=True), proxy_in_use=True)
+    assert not sb(ns(load_media=False), proxy_in_use=False)
+    assert not sb(ns(load_media=False), proxy_in_use=True, over_cdp=True)
+    assert sb(ns(load_media=False, force_block_media=True), proxy_in_use=False)
+
+    class Route:
+        def __init__(self, kind):
+            self.request = ns(resource_type=kind)
+            self.done = None
+
+        def abort(self, reason=None):
+            self.done = "abort"
+
+        def continue_(self):
+            self.done = "continue"
+    class AsyncRoute(Route):
+        async def abort(self, reason=None):
+            self.done = "abort"
+
+        async def continue_(self):
+            self.done = "continue"
+    for kind, want in (("image", "abort"), ("media", "abort"), ("font", "abort"),
+                       ("document", "continue"), ("script", "continue"), ("xhr", "continue"),
+                       ("fetch", "continue"), ("stylesheet", "continue")):
+        r = Route(kind)
+        proxy_pool.playwright_media_route(r)
+        assert r.done == want, (kind, r.done)
+        # playwright_scraper.py drives Playwright's ASYNC API, where abort()
+        # and continue_() are coroutines: the handler must await them, or
+        # every request hangs (measured on a real browser before this fix).
+        r = AsyncRoute(kind)
+        asyncio.run(proxy_pool.playwright_media_route_async(r))
+        assert r.done == want, ("async", kind, r.done)
+
+
+@check("media blocking, Playwright: scrape_category installs the route on the context behind a proxy pool, and not with --load-media, with no proxy, or over --cdp-endpoint; --force-block-media installs it without a proxy")
+def _():
+    for argv, with_pool, want in (([], True, True), (["--load-media"], True, False), ([], False, False),
+                                  (["--cdp-endpoint", "ws://127.0.0.1:1"], False, False),
+                                  (["--force-block-media"], False, True)):
+        with tempfile.TemporaryDirectory() as td:
+            args = _pw_args(["--category", "crm", "--max-pages", "1"] + argv, td)
+            pool = proxy_pool.ProxyPool(proxy_pool.load_proxies("http://10.0.0.1:8080", None)) if with_pool else None
+            browser = _FakeBrowser([(200, listing_html(cards=3, next_disabled=True))])
+            asyncio.run(playwright_scraper.scrape_category(
+                args=args, start_url=gp.category_url("crm"), browser=browser, proxy_pool=pool,
+                client=None, autosolve=False, user_agent=None))
+            routes = browser.pages[0].context.routes
+            assert routes == ([("**/*", proxy_pool.playwright_media_route_async)] if want else []), (argv, with_pool, routes)
+
+
+@check("media blocking, pyppeteer: CDP Fetch pauses only Image/Media/Font and fails what it paused, behind a proxy only; every page the engine opens goes through _block_media_if_needed")
+def _():
+    from argparse import Namespace as ns
+
+    class Client:
+        def __init__(self):
+            self.sent, self.handlers = [], {}
+
+        def on(self, name, fn):
+            self.handlers[name] = fn
+
+        async def send(self, cmd, params=None):
+            self.sent.append((cmd, params))
+
+    proxy = proxy_pool.parse_proxy_line("http://10.0.0.1:8080")
+    for argv, px, want in (([], proxy, True), (["--load-media"], proxy, False), ([], None, False),
+                           (["--cdp-endpoint", "ws://127.0.0.1:1"], proxy, False),
+                           (["--force-block-media"], None, True)):
+        client = Client()
+
+        async def session(client=client):
+            return client
+        page = ns(target=ns(createCDPSession=session))
+        args = _parse(puppeteer_scraper, ["--category", "crm"] + argv)
+
+        async def drive(page=page, args=args, px=px, client=client):
+            got = await puppeteer_scraper._block_media_if_needed(page, args, px)
+            if "Fetch.requestPaused" in client.handlers:
+                client.handlers["Fetch.requestPaused"]({"requestId": "r1", "resourceType": "Image"})
+                await asyncio.sleep(0)
+            return got
+        got = asyncio.run(drive())
+        enabled = [p for c, p in client.sent if c == "Fetch.enable"]
+        if want:
+            assert got and len(enabled) == 1, (argv, client.sent)
+            assert sorted(p["resourceType"] for p in enabled[0]["patterns"]) == ["Font", "Image", "Media"]
+            assert client.sent[-1] == ("Fetch.failRequest", {"requestId": "r1", "errorReason": "BlockedByClient"})
+        else:
+            assert not got and not client.sent, (argv, client.sent)
+    src = (ROOT / "puppeteer_scraper.py").read_text(encoding="utf-8")
+    assert src.count("await _block_media_if_needed(page, args, proxy)") == src.count("await browser.newPage()") == 3, (
+        "every page puppeteer_scraper opens must go through _block_media_if_needed")
+
+
+@check("media blocking, Selenium: _build_driver blocks images/video/fonts by URL (not scripts or styles) when asked, sets driver.media_blocked, and every driver the engine builds passes should_block_media")
+def _():
+    class Drv:
+        def __init__(self, **_kw):
+            self.cdp = []
+
+        def execute_cdp_cmd(self, cmd, params):
+            self.cdp.append((cmd, params))
+
+    class Opts:
+        def __init__(self):
+            self.debugger_address = None
+            self.binary_location = None
+
+        def add_argument(self, _a):
+            pass
+    saved = (selenium_scraper.webdriver, selenium_scraper.Options, selenium_scraper.Service)
+    selenium_scraper.webdriver = type("wd", (), {"Chrome": Drv})
+    selenium_scraper.Options, selenium_scraper.Service = Opts, None
+    try:
+        proxy = proxy_pool.parse_proxy_line("http://10.0.0.1:8080")
+        on = selenium_scraper._build_driver(headless=True, proxy=proxy, cdp_endpoint=None, block_media=True)
+        off = selenium_scraper._build_driver(headless=True, proxy=proxy, cdp_endpoint=None, block_media=False)
+    finally:
+        selenium_scraper.webdriver, selenium_scraper.Options, selenium_scraper.Service = saved
+    blocked = dict(on.cdp).get("Network.setBlockedURLs", {}).get("urls", [])
+    assert on.media_blocked is True and all(p in blocked for p in ("*.jpg", "*.webp?*", "*.mp4", "*.woff2")), blocked
+    assert not any(p.startswith(("*.js", "*.css")) for p in blocked), blocked
+    assert off.media_blocked is False and off.cdp == [], off.cdp
+    src = (ROOT / "selenium_scraper.py").read_text(encoding="utf-8")
+    assert src.count("driver = _build_driver(") == src.count("block_media=should_block_media(") == 3
+
+
+@check("every browser engine documents --load-media in --help and hides the --force-block-media test switch")
+def _():
+    for mod in ENGINE_MODULES:
+        text = mod.build_arg_parser().format_help()
+        assert "--load-media" in text and "--force-block-media" not in text, mod.__name__
+        assert _parse(mod, ["--category", "crm"]).load_media is False
 
 
 def run() -> int:

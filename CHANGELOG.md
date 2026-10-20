@@ -6,11 +6,32 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
-> **Behaviour change.** A run whose first page never loaded through a proxy
-> pool on every `--block-retries` attempt now ends `remote_api_error`, exit
-> 5, instead of `blocked`, exit 3. Rotation is unchanged: each attempt still
-> moves to the next exit. A real block or challenge on the last attempt is
-> still exit 3.
+> **Behaviour changes.** (1) A run whose first page never loaded through a
+> proxy pool on every `--block-retries` attempt now ends `remote_api_error`,
+> exit 5, instead of `blocked`, exit 3. Rotation is unchanged: each attempt
+> still moves to the next exit. A real block or challenge on the last attempt
+> is still exit 3. (2) Behind `--proxy` / `--proxy-file`, every browser engine
+> now sends one `HEAD https://www.g2.com/robots.txt` through the first exit
+> before starting a browser. A gateway `407` or `402` ends the run with exit
+> 5 and `stop_reason: proxy_auth_failed` in the new
+> `<out>.latest_attempt.meta.json`, and no browser is started. `<out>` and
+> `<out>.meta.json` are left untouched. (3) Behind a local proxy, the browser
+> no longer downloads images, video/audio or web fonts. `--load-media`
+> restores the old behaviour. Nothing changes with `--cdp-endpoint`,
+> `--scraper-api` or without a proxy.
+
+### Added
+
+- Proxy pre-check in all three browser engines (`ProxyPool.peek()` names the
+  exit the run will use first). Selenium pre-checks the proxy without
+  credentials, exactly as its browser uses it, and says so when a 407
+  follows. A 403, a timeout or an unreachable proxy is not treated as a
+  verdict.
+- Media blocking behind a local proxy: by resource type in Playwright
+  (`context.route`, with an async handler for this repo's async API) and
+  pyppeteer (CDP `Fetch`), and by file extension in Selenium
+  (`Network.setBlockedURLs`). `--load-media` opts out on all three.
+  Playwright turns off its HTTP cache while a route is installed.
 
 ### Fixed
 

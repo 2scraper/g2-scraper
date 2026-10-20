@@ -73,8 +73,11 @@ from captcha_solver import (
     CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
 )
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
-from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, sku_key as _sku_key
-from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
+from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, precheck_or_stop, sku_key as _sku_key
+from proxy_pool import (
+    Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials,
+    pyppeteer_block_media, should_block_media,
+)
 from scraper_api_client import TwoCaptchaAuthError, TwoCaptchaClient, TwoCaptchaError
 
 ENGINE_NAME = "puppeteer"
@@ -160,6 +163,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-shuffle", action="store_true")
     p.add_argument("--proxy-block-retries", type=_nonnegative_int, default=3)
+    p.add_argument("--load-media", action="store_true",
+                   help="Load images, video and web fonts. By default they are aborted "
+                        "while a LOCAL browser goes through --proxy/--proxy-file (no parser "
+                        "reads them, and a proxy bills per byte); never blocked with "
+                        "--cdp-endpoint or with no proxy.")
+    p.add_argument("--force-block-media", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -273,6 +282,18 @@ async def _launch(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
     if _CHROMIUM_EXECUTABLE:
         kwargs["executablePath"] = _CHROMIUM_EXECUTABLE
     return await pyppeteer_launch(**kwargs)
+
+
+async def _block_media_if_needed(page, args: argparse.Namespace, proxy: Optional[Proxy]) -> bool:
+    """Behind a metered local proxy, abort images, video/audio and web fonts
+    through CDP Fetch (resource-type patterns, so only those requests are
+    paused). Not over --cdp-endpoint, not without a proxy; --load-media
+    keeps them. Returns whether blocking was installed."""
+    if not should_block_media(args, proxy_in_use=proxy is not None,
+                              over_cdp=bool(args.cdp_endpoint)):
+        return False
+    await pyppeteer_block_media(page)
+    return True
 
 
 async def _authenticate_if_needed(page, proxy: Optional[Proxy]) -> None:
@@ -526,6 +547,7 @@ async def scrape_category(
     if user_agent:
         await page.setUserAgent(user_agent)
     await _authenticate_if_needed(page, proxy)
+    await _block_media_if_needed(page, args, proxy)
     if autosolve:
         await _enable_scraping_browser_auto_solve(page)
 
@@ -708,6 +730,7 @@ async def scrape_product_page(
     if user_agent:
         await page.setUserAgent(user_agent)
     await _authenticate_if_needed(page, proxy)
+    await _block_media_if_needed(page, args, proxy)
     if autosolve:
         await _enable_scraping_browser_auto_solve(page)
 
@@ -884,6 +907,7 @@ async def scrape_pricing_only(
     if user_agent:
         await page.setUserAgent(user_agent)
     await _authenticate_if_needed(page, proxy)
+    await _block_media_if_needed(page, args, proxy)
 
     tiers, blocked, remote_api_error = await scrape_pricing_page(
         args=args, start_url=start_url, page=page, client=client, autosolve=autosolve,
@@ -1094,6 +1118,19 @@ async def run(args: argparse.Namespace) -> int:
     if args.cdp_endpoint and proxy_pool is not None:
         log.warning("Ignoring --proxy: a --cdp-endpoint session already carries its own exit IP.")
         proxy_pool = None
+
+    # One HEAD for robots.txt through the proxy BEFORE any browser starts:
+    # a gateway 407/402 ends the run here (exit 5) instead of launching a
+    # browser whose every request would be refused, and is not rotated away.
+    if proxy_pool is not None and not args.cdp_endpoint:
+        first = proxy_pool.peek()
+        stopped = precheck_or_stop(
+            first.url() if first else None, args=args, start_url=start_url, engine=ENGINE_NAME,
+            pages_requested=args.max_pages if mode == "category" else 1,
+            started_at=started_at, env_var="G2_PROXY", site="g2.com",
+        )
+        if stopped is not None:
+            return stopped
 
     client = None
     if args.twocaptcha_key and (args.solve_captcha != "off" or args.fingerprint):
