@@ -68,6 +68,7 @@ else:
     _PYPPETEER_IMPORT_ERROR = None
 
 import env_config
+import proxy_meter
 import g2_parser as gp
 from captcha_solver import (
     CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
@@ -169,6 +170,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "reads them, and a proxy bills per byte); never blocked with "
                         "--cdp-endpoint or with no proxy.")
     p.add_argument("--force-block-media", action="store_true", help=argparse.SUPPRESS)
+    proxy_meter.add_budget_argument(p)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -288,7 +290,12 @@ async def _block_media_if_needed(page, args: argparse.Namespace, proxy: Optional
     """Behind a metered local proxy, abort images, video/audio and web fonts
     through CDP Fetch (resource-type patterns, so only those requests are
     paused). Not over --cdp-endpoint, not without a proxy; --load-media
-    keeps them. Returns whether blocking was installed."""
+    keeps them. Returns whether blocking was installed.
+
+    Also where a page behind a LOCAL proxy gets its --proxy-budget-mb meter
+    (a CDP session counting Network events), since every page passes here."""
+    if proxy is not None and not args.cdp_endpoint:
+        await proxy_meter.current().attach_pyppeteer(page)
     if not should_block_media(args, proxy_in_use=proxy is not None,
                               over_cdp=bool(args.cdp_endpoint)):
         return False
@@ -491,6 +498,9 @@ async def _goto_with_retries(page, url: str, *, retries: int, retry_delay: float
     last_error: Optional[str] = None
     status: Optional[int] = None
     for attempt in range(retries + 1):
+        if proxy_meter.exceeded():
+            last_error = proxy_meter.STOP_REASON  # --proxy-budget-mb: no new navigation
+            break
         try:
             response = await page.goto(url, {"waitUntil": "domcontentloaded", "timeout": NAV_TIMEOUT_MS})
             await asyncio.sleep(READINESS_WAIT_S)
@@ -556,6 +566,8 @@ async def scrape_category(
     last_html = ""
 
     for page_num in range(start_page, start_page + args.max_pages):
+        if proxy_meter.exceeded():
+            break  # --proxy-budget-mb is spent; finish_run names the stop
         page_url = gp.category_url(slug, page_num) if slug else start_url
         status, last_error = await _goto_with_retries(
             page, page_url, retries=args.retries, retry_delay=args.retry_delay,
@@ -863,6 +875,8 @@ async def _enrich_with_pricing(
     filled = 0
     attempted = 0
     for product in products[: args.pricing_limit]:
+        if proxy_meter.exceeded():
+            break  # --proxy-budget-mb: no further pricing page through the proxy
         slug = product.product_slug or gp.slug_from_product_url(product.product_url)
         if not slug:
             continue
@@ -1122,6 +1136,10 @@ async def run(args: argparse.Namespace) -> int:
     # One HEAD for robots.txt through the proxy BEFORE any browser starts:
     # a gateway 407/402 ends the run here (exit 5) instead of launching a
     # browser whose every request would be refused, and is not rotated away.
+    # Meters what goes through a LOCAL proxy (none over --cdp-endpoint or
+    # without a proxy) and stops the run at --proxy-budget-mb.
+    proxy_meter.start(getattr(args, "proxy_budget_mb", None),
+                      active=proxy_pool is not None and not args.cdp_endpoint)
     if proxy_pool is not None and not args.cdp_endpoint:
         first = proxy_pool.peek()
         stopped = precheck_or_stop(
@@ -1164,7 +1182,7 @@ async def run(args: argparse.Namespace) -> int:
                 args=args, start_url=start_url, proxy_pool=proxy_pool, client=client,
                 autosolve=autosolve, user_agent=user_agent,
             )
-            if not (blocked and not merged):
+            if not (blocked and not merged) or proxy_meter.exceeded():
                 break
             if block_attempt < args.block_retries:
                 log.warning(

@@ -409,6 +409,22 @@ def main():
                     rows = json.loads(Path(out).read_text())
                     assert len(rows) == 1, f"{url}: expected one output row, got {rows}"
 
+        @check(f"{engine}: --proxy-budget-mb stops a real proxied browser run: page 1 spends the 2 KB budget, "
+               f"page 2 is never fetched, page 1's rows are kept, exit 6, stop_reason proxy_budget_exceeded")
+        def _(engine=engine):
+            with tempfile.TemporaryDirectory() as d:
+                out = str(Path(d) / "out.json")
+                code, stdout, stderr = _run(engine, [
+                    "--category", "crm", "--max-pages", "5", "--out", out, "--headless",
+                    "--proxy", f"http://127.0.0.1:{proxy_port}", "--proxy-budget-mb", "0.002",
+                ], chromium_path=args.chromium_path)
+                assert code == 6, f"exit {code}, stderr tail: {stderr[-800:]}"
+                meta = json.loads(Path(out + ".meta.json").read_text())
+                assert meta["stop_reason"] == "proxy_budget_exceeded" and meta["proxy_budget_exceeded"] is True, meta
+                assert meta["proxy_bytes"] > 2000 and meta["proxy_budget_bytes"] == 2000, meta
+                assert len(json.loads(Path(out).read_text())) == 3, "page 1's three products"
+                assert "Proxy traffic: 0.0 MB of 0.002 MB budget" in stderr, stderr[-400:]
+
         if engine == "playwright":
             @check(f"{engine}: full DataDomeSliderTask solve round trip (cookie applied, page reloaded, healthy content served)")
             def _(engine=engine):

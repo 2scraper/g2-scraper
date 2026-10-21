@@ -156,3 +156,11 @@ jobs:
         run: |
           source .venv-${{ matrix.engine }}/bin/activate
           python3 local_e2e_test.py --engines ${{ matrix.engine }}
+      - name: The proxy meter against a stub proxy, in a real browser
+        # tests/test_proxy_meter.py compares this engine's byte count with
+        # what a local stub proxy saw; PROXY_METER_REQUIRE makes a missing
+        # engine or browser a failure here instead of a skip.
+        run: |
+          source .venv-${{ matrix.engine }}/bin/activate
+          PROXY_METER_REQUIRE=${{ matrix.engine == 'puppeteer' && 'pyppeteer' || matrix.engine }} \
+            python3 -m unittest -v tests.test_proxy_meter

@@ -72,6 +72,7 @@ else:
     _SELENIUM_IMPORT_ERROR = None
 
 import env_config
+import proxy_meter
 import g2_parser as gp
 from captcha_solver import (
     CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
@@ -180,6 +181,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "reads them, and a proxy bills per byte); never blocked with "
                         "--cdp-endpoint or with no proxy.")
     p.add_argument("--force-block-media", action="store_true", help=argparse.SUPPRESS)
+    proxy_meter.add_budget_argument(p)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument(
@@ -302,6 +304,9 @@ def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
                 proxy.host, proxy.port,
             )
         options.add_argument(f"--proxy-server={proxy.server_only()}")
+        # Chrome's performance log carries the CDP Network events the
+        # --proxy-budget-mb meter counts.
+        proxy_meter.selenium_logging_prefs(options)
 
     if Service and _CHROMEDRIVER_PATH:
         service = Service(executable_path=_CHROMEDRIVER_PATH)
@@ -310,6 +315,8 @@ def _build_driver(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
     else:
         service = None
     driver = webdriver.Chrome(service=service, options=options) if service else webdriver.Chrome(options=options)
+    if proxy is not None:
+        proxy_meter.current().attach_selenium(driver, keep_entries=False)
     driver.media_blocked = False
     if block_media:
         # By URL pattern: Selenium has no request events, only
@@ -512,10 +519,14 @@ def _goto_with_retries(driver, url: str, *, retries: int, retry_delay: float,
     last_error: Optional[str] = None
     status: Optional[int] = None
     for attempt in range(retries + 1):
+        if proxy_meter.exceeded():
+            last_error = proxy_meter.STOP_REASON  # --proxy-budget-mb: no new navigation
+            break
         try:
             driver.set_page_load_timeout(NAV_TIMEOUT_S)
             driver.get(url)
             time.sleep(READINESS_WAIT_S)
+            proxy_meter.current().poll_selenium(driver)  # --proxy-budget-mb
             try:
                 reported = driver.execute_script(_STATUS_JS)
                 status = int(reported) if reported else None
@@ -574,6 +585,8 @@ def scrape_category(
 
     try:
         for page_num in range(start_page, start_page + args.max_pages):
+            if proxy_meter.exceeded():
+                break  # --proxy-budget-mb is spent; finish_run names the stop
             page_url = gp.category_url(slug, page_num) if slug else start_url
             status, last_error = _goto_with_retries(
                 driver, page_url, retries=args.retries, retry_delay=args.retry_delay,
@@ -721,6 +734,7 @@ def scrape_category(
         if args.dump_html and last_html:
             Path(_dump_path(args.out)).write_text(last_html, encoding="utf-8")
     finally:
+        proxy_meter.current().poll_selenium(driver)  # what the last page still loaded
         driver.quit()
 
     return merged, blocked, remote_api_error, pages_completed, failed_pages
@@ -791,6 +805,7 @@ def scrape_product_page(
         if args.dump_html:
             Path(_dump_path(args.out)).write_text(html, encoding="utf-8")
     finally:
+        proxy_meter.current().poll_selenium(driver)  # what the last page still loaded
         driver.quit()
 
     if not products and not blocked and not not_found:
@@ -864,6 +879,8 @@ def _enrich_with_pricing(*, args: argparse.Namespace, products: List[Product], d
     filled = 0
     attempted = 0
     for product in products[: args.pricing_limit]:
+        if proxy_meter.exceeded():
+            break  # --proxy-budget-mb: no further pricing page through the proxy
         slug = product.product_slug or gp.slug_from_product_url(product.product_url)
         if not slug:
             continue
@@ -910,6 +927,7 @@ def scrape_pricing_only(
             except WebDriverException:
                 pass
     finally:
+        proxy_meter.current().poll_selenium(driver)  # what the last page still loaded
         driver.quit()
     products = _pricing_only_product(start_url, tiers)
     if remote_api_error and proxy_pool is not None and proxy is not None:
@@ -1121,6 +1139,10 @@ def run(args: argparse.Namespace) -> int:
     # One HEAD for robots.txt through the proxy BEFORE any browser starts:
     # a gateway 407/402 ends the run here (exit 5) instead of launching a
     # browser whose every request would be refused, and is not rotated away.
+    # Meters what goes through a LOCAL proxy (none over --cdp-endpoint or
+    # without a proxy) and stops the run at --proxy-budget-mb.
+    proxy_meter.start(getattr(args, "proxy_budget_mb", None),
+                      active=proxy_pool is not None and not args.cdp_endpoint)
     if proxy_pool is not None and not args.cdp_endpoint:
         first = proxy_pool.peek()
         stopped = precheck_or_stop(
@@ -1163,7 +1185,7 @@ def run(args: argparse.Namespace) -> int:
             merged, blocked, remote_api_error, pages_completed, failed_pages = scrape_fn(
                 args=args, start_url=start_url, proxy_pool=proxy_pool, client=client, user_agent=user_agent,
             )
-            if not (blocked and not merged):
+            if not (blocked and not merged) or proxy_meter.exceeded():
                 break
             if block_attempt < args.block_retries:
                 log.warning(

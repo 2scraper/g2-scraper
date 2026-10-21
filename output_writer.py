@@ -27,6 +27,8 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, List, Optional, Sequence, Tuple
 
+import proxy_meter
+
 # --------------------------------------------------------------------------- #
 # Exit codes — identical across playwright_scraper / selenium_scraper /
 # puppeteer_scraper, and identical to every other 2scraper family repo. A
@@ -390,9 +392,11 @@ def write_failed_attempt(
         "transport_error": transport_error,
         "data_updated": False,
     }
+    meta.update(proxy_meter.sidecar())  # proxy_bytes / proxy_budget_bytes / proxy_budget_exceeded
     path = f"{out_path}{ATTEMPT_META_SUFFIX}"
     with _atomic(path) as f:
         f.write(json.dumps(meta, ensure_ascii=False, indent=2))
+    proxy_meter.report()
     return path
 
 
@@ -485,6 +489,7 @@ def finish_run(
         blocked, remote_api_error = False, True
     failed_pages = failed_pages or []
     zero_products = len(products) == 0
+    meter = proxy_meter.current()
 
     if zero_products:
         if remote_api_error:
@@ -507,6 +512,12 @@ def finish_run(
         status, exit_code = "complete", EXIT_OK
         derived_reason = "complete"
     stop_reason = stop_reason or derived_reason
+    if meter.exceeded:
+        # The run stopped itself at --proxy-budget-mb. That outranks whatever
+        # the pages it did fetch said: rows kept -> 6, none -> 5 (never 3/4).
+        status, exit_code = ("remote_api_error", EXIT_REMOTE_API_ERROR) if zero_products \
+            else ("partial", EXIT_PARTIAL)
+        stop_reason = proxy_meter.STOP_REASON
 
     # The "never overwrite good output with empty" rule: a zero-product
     # outcome writes NEITHER file NOR sidecar unless the caller explicitly
@@ -514,12 +525,27 @@ def finish_run(
     # place untouched, and a stale failure sidecar beside it would
     # contradict that good data.
     if zero_products and not allow_empty:
+        if meter.active:
+            # Nothing written, but what the proxy carried is still recorded
+            # beside the untouched data: <out>.latest_attempt.meta.json.
+            attempt = {
+                "status": status, "stop_reason": stop_reason, "engine": engine, "url": url,
+                "pages_requested": pages_requested, "pages_completed": pages_completed,
+                "failed_pages": failed_pages, "product_count": 0, "started_at": started_at,
+                "finished_at": time.time(), "data_updated": False,
+            }
+            attempt.update(proxy_meter.sidecar())
+            attempt.update(extra_meta or {})
+            with _atomic(f"{out_path}{ATTEMPT_META_SUFFIX}") as f:
+                f.write(json.dumps(attempt, ensure_ascii=False, indent=2))
+        proxy_meter.report()
         return exit_code
 
     escaped = write_output(products, out_path, fmt)
     # Housekeeping goes UNDER the caller's extra: a key collision must never
     # silently drop site data the caller chose to record.
     meta_extra = {"csv_cells_escaped": escaped} if fmt == "csv" else {}
+    meta_extra.update(proxy_meter.sidecar())
     meta_extra.update(extra_meta or {})
     write_meta(
         out_path, status=status, stop_reason=stop_reason, engine=engine, url=url,
@@ -532,4 +558,5 @@ def finish_run(
         print(f"note: {escaped} CSV cell(s) began with a formula character and were "
               f"prefixed with {CSV_FORMULA_ESCAPE!r}; the JSON output is unchanged "
               f"(csv_cells_escaped in the sidecar).", file=sys.stderr)
+    proxy_meter.report()
     return exit_code

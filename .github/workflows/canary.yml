@@ -59,8 +59,16 @@ jobs:
           set +e
           python3 playwright_scraper.py \
             --category crm --max-pages 3 --max-results 60 \
-            --format json --out canary_out.json --dump-html
+            --format json --out canary_out.json --dump-html --proxy-budget-mb 10
           echo "exit_code=$?" >> "$GITHUB_ENV"
+
+      # What the run sent through G2_PROXY, read from its sidecar, into the
+      # job summary. Red when the run stopped at the 10 MB budget
+      # (stop_reason proxy_budget_exceeded); a missing sidecar is reported,
+      # not failed — the next step judges the run itself.
+      - name: Proxy traffic
+        if: always() && env.HAS_PROXY == 'true'
+        run: python3 .github/proxy_traffic_summary.py canary_out.json canary-live 10
 
       - name: Require a complete multi-page run
         if: env.HAS_PROXY == 'true'
@@ -103,6 +111,7 @@ jobs:
           path: |
             canary_out.json
             canary_out.json.meta.json
+            canary_out.json.latest_attempt.meta.json
             canary_out_debug.html
           retention-days: 14
 
