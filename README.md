@@ -146,6 +146,7 @@ counted as one toggle).
 | `--proxy-shuffle` | off | |
 | `--proxy-block-retries` | `3` | Per-exit failure budget before the pool drops an exit |
 | `--load-media` | off | Load images, video and web fonts through the proxy too. By default a local browser behind `--proxy`/`--proxy-file` blocks them — see [Traffic savers](#traffic-savers-pre-check-and-media-blocking) |
+| `--proxy-budget-mb` | 10 | Stop once this many MB have gone through `--proxy`/`--proxy-file`; `0` = unlimited — see [Traffic budget](#traffic-budget) |
 
 **Captcha and 2Captcha APIs**
 
@@ -197,9 +198,10 @@ product_slug, vendor_id, category_id, product_type
 answers HTTP 404, which is not retried) · `5` the content was never obtained:
 a remote API error, a navigation failure, a proxy gateway that refused the
 pre-check with 407/402 (`stop_reason: proxy_auth_failed`), or a served page that parsed to
-nothing (`parser_found_nothing`, e.g. a product page with no product data) ·
-`6` partial: rows were gathered and then a page failed, was blocked or hit a
-remote error. CSV output prefixes formula-shaped text cells (`=`, `+`, `-`,
+nothing (`parser_found_nothing`, e.g. a product page with no product data),
+or the proxy budget ran out before any row was read (`proxy_budget_exceeded`) ·
+`6` partial: rows were gathered and then a page failed, was blocked, hit a
+remote error or the proxy budget (`proxy_budget_exceeded`). CSV output prefixes formula-shaped text cells (`=`, `+`, `-`,
 `@`, tab, CR, LF) with `'` so a spreadsheet does not execute them; JSON keeps
 the site's text unchanged, and the sidecar's `csv_cells_escaped` says how
 many cells differ. Output files are written atomically (a failed write
@@ -299,6 +301,38 @@ pyppeteer fetched the page, the script and `/favicon.ico`. A live comparison
 against g2.com was not possible that day: from a datacentre address, both
 the plain run and the run with blocking forced (Playwright, no proxy,
 `--category crm --max-pages 1`) got HTTP 403 on page 1 (exit 3).
+
+### Traffic budget
+
+Also only for a browser this repo launches behind `--proxy`/`--proxy-file`
+(not with `--cdp-endpoint`, `--scraper-api` or no proxy): every byte that
+browser sends or receives through the proxy is counted, and
+`--proxy-budget-mb` (default `10`; `0` = unlimited) caps a run. Once the
+running total passes the budget, no further listing page, pricing page or
+`--block-retries` attempt is started, the browser aborts any request it
+still tries, the rows already read are kept, and the run ends with
+`stop_reason: proxy_budget_exceeded` — exit 6 with rows, exit 5 without,
+whatever else the fetched pages said. It never goes on silently.
+
+The sidecar records `proxy_bytes`, `proxy_budget_bytes` and
+`proxy_budget_exceeded` (`null` / `null` / `false` without a local proxy). A
+proxied run that writes no rows records them in
+`<out>.latest_attempt.meta.json`, leaving `<out>` and `<out>.meta.json` as
+they were. A proxied run ends with one line such as
+`Proxy traffic: 3.2 MB of 10 MB budget`.
+
+The count is an estimate of the tunnelled payload — request line, headers
+and body sent, response headers and body as received — not the proxy's
+invoice: TLS records, the `CONNECT` exchange, WebSocket frames and the
+browser's own background requests are not visible to it, so the bill is a
+few per cent higher. 1 MB = 1,000,000 bytes.
+
+| Engine | Counted from |
+|---|---|
+| Playwright | `request.sizes()` of every finished or failed request |
+| pyppeteer | CDP `Network.loadingFinished.encodedDataLength` of every `http(s)` response that came over the network, plus each request's line, headers and body (`Network.requestWillBeSent`) |
+| Selenium | the same CDP events, read from Chrome's performance log |
+| pre-check | the `HEAD` itself |
 
 ## Known limitations
 

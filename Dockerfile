@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir -r requirements-playwright.txt \
 # selenium/pyppeteer aren't installed in this image, so their own
 # try/except ImportError guard is what fires, the same as smoke_test.py's
 # no-engine-installed path in CI.
-COPY env_config.py proxy_pool.py output_writer.py captcha_solver.py \
+COPY env_config.py proxy_pool.py proxy_meter.py output_writer.py captcha_solver.py \
      fingerprint_client.py scraper_api_client.py diff_runs.py \
      g2_parser.py playwright_scraper.py puppeteer_scraper.py \
      selenium_scraper.py smoke_test.py ./
