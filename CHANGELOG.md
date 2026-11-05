@@ -54,6 +54,19 @@ All notable changes to this project are documented here. Format follows
 
 ### Fixed
 
+- Over `--cdp-endpoint`, a page on which the Scraping Browser API detected a
+  challenge was judged about 1.5 s after it first loaded, from the
+  challenge's own HTTP 403, so the run reported a block even when the managed
+  browser then logged the challenge as solved. Playwright and pyppeteer now
+  wait for that solve to end (up to 60 s) and for the page's real content (up
+  to 20 s more), then classify the page that was actually served. A page that
+  never shows content keeps its 403 and is still reported as blocked. Nothing
+  changes without `--cdp-endpoint` or when no challenge is detected.
+- CI only: `canary-live` runs Chromium headful under Xvfb. On 2026-11-05 a
+  headless Chromium got DataDome's hard refusal through the US residential
+  proxy on every attempt; a headful one gets a challenge instead.
+  `TESTING.md` now says the canary fails, naming the missing secret, rather
+  than skipping, and runs weekly.
 - A first page that timed out through the proxy on every attempt was reported
   as a site block (exit 3), even though the site never answered. A proxy that rejects its credential (HTTP 407) shows
   up in Chromium as exactly this navigation timeout. All three engines now

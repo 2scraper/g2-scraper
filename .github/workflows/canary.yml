@@ -18,6 +18,12 @@ jobs:
   # empty, or partial as green would hide exactly the parser/pagination
   # regressions a live canary exists to detect.
   #
+  # Headful under Xvfb, measured 2026-11-05: a headless Chromium got
+  # DataDome's hard refusal (dd 't':'bv', no challenge at all) through the
+  # US residential G2_PROXY on every attempt, and from a datacentre address
+  # with no proxy. From that same datacentre address a headful Chromium got
+  # a challenge instead, the same refusal class a real visitor gets.
+  #
   # ALSO NOTE, and do not "fix" this into a sibling repo's threshold:
   # price_confirmed_pct is expected to be 0 (or null) here. g2.com carries
   # NO price on a category card or a product page at all — pricing lives on
@@ -56,8 +62,9 @@ jobs:
           G2_PROXY: ${{ secrets.G2_PROXY }}
           TWOCAPTCHA_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
         run: |
+          command -v xvfb-run >/dev/null || sudo apt-get install -y xvfb
           set +e
-          python3 playwright_scraper.py \
+          xvfb-run -a python3 playwright_scraper.py --headful \
             --category crm --max-pages 3 --max-results 60 \
             --format json --out canary_out.json --dump-html --proxy-budget-mb 10
           echo "exit_code=$?" >> "$GITHUB_ENV"

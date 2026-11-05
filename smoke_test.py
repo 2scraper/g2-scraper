@@ -3093,6 +3093,64 @@ def _():
         assert proc.returncode == 0 and "not recorded" in last, proc.stdout
 
 
+@check("--cdp-endpoint: when the Scraping Browser API detects a challenge on a navigation, each CDP engine "
+       "waits for its solve to end and for real content, and then classifies the page by what was served — "
+       "not by the challenge's own HTTP 403 read 1.5 s after domcontentloaded (2026-11-05 canary: DataDome "
+       "interstitial, 'captcha solved' logged, page reported blocked). No detection: nothing waits. "
+       "No content after the solve: the 403 stands")
+def _():
+    interstitial = (ROOT / "tests" / "fixtures" / "g2_datadome_interstitial.html").read_text(encoding="utf-8")
+    served = listing_html(cards=5)
+    has_cards = lambda h: gp.count_result_cards(h) >= gp.MIN_CARD_MATCHES  # noqa: E731
+
+    class FakePage:
+        def __init__(self, pages, events, finish_after):
+            self.pages, self.events, self.finish_after, self.reads = list(pages), events, finish_after, 0
+
+        async def content(self):
+            self.reads += 1
+            return self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
+
+    def scenario(engine, pages, *, detected=True, document_status=200, finish_after=3):
+        events = captcha_solver.AutoSolveEvents()
+        mark = events.mark()
+        if detected:
+            events.on_detected()
+        page = FakePage(pages, events, finish_after)
+        slept = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == finish_after and detected:
+                events.on_finished()
+                events.document_status = document_status
+
+        original = engine.asyncio.sleep
+        engine.asyncio.sleep = fake_sleep
+        try:
+            result = asyncio.run(engine._settle_autosolve(page, events, mark, 403, interstitial, has_cards))
+        finally:
+            engine.asyncio.sleep = original
+        return result, slept, page
+
+    for engine in (playwright_scraper, puppeteer_scraper):
+        name = engine.__name__
+        (status, html), slept, page = scenario(engine, [interstitial, interstitial, served])
+        assert has_cards(html) and status == 200, (name, status)
+        assert len(slept) >= 3, (name, "returned before the solve finished", slept)
+        # The reload kept a 4xx document status: content still decides, and no 4xx is reported.
+        (status, html), _, _ = scenario(engine, [served], document_status=403)
+        assert has_cards(html) and status is None, (name, status)
+        # Nothing detected on this navigation: no wait, no read, original values back.
+        (status, html), slept, page = scenario(engine, [served], detected=False)
+        assert (status, html, slept, page.reads) == (403, interstitial, [], 0), (name, status, slept)
+        # Solve ended but the page never rendered content: the refusal stands, bounded wait.
+        (status, html), slept, _ = scenario(engine, [interstitial])
+        assert status == 403 and not has_cards(html), (name, status)
+        bound = captcha_solver.AUTOSOLVE_FINISH_TIMEOUT_S + captcha_solver.AUTOSOLVE_CONTENT_TIMEOUT_S
+        assert sum(slept) <= bound, (name, sum(slept))
+
+
 def run() -> int:
     """All @check-decorated functions above already ran at import time
     (that's the point — see the `check()` docstring) and self-registered
