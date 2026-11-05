@@ -199,7 +199,7 @@ It refuses to diff a run whose sidecar isn't `complete`, on purpose.
 In the GitHub repo's Settings:
 
 - **Secrets and variables → Actions**: add `TWOCAPTCHA_KEY`, `G2_CDP_ENDPOINT` / `G2_PROXY`. `canary-live` fails without `G2_PROXY`, naming the secret, and once configured requires a complete three-page run (it runs Chromium headful under Xvfb: headless Chromium drew DataDome's hard refusal on 2026-11-05). `canary-cdp` behaves the same way for the managed-browser path with `G2_CDP_ENDPOINT`. Also add `CLAUDE_CODE_OAUTH_TOKEN` (for `claude.yml` / `claude-code-review.yml` — both silently no-op without it, by design, rather than failing every PR check).
-- **Actions → canary → Run workflow**: dispatch it manually at least once rather than waiting for the weekly cron (Mondays, 07:17 UTC) and trusting the badge blind. The canary passes only on exit 0, `status == "complete"`, at least three completed pages and the product-count floor. Without the required secret the job fails with an error naming it: a canary that skips green tests nothing. It deliberately does not assert a price floor: without `--with-pricing`, `price_confirmed_pct` of 0 is correct here.
+- **Actions → canary → Run workflow**: dispatch it manually at least once rather than waiting for the weekly cron (Mondays, 09:27 UTC) and trusting the badge blind. The canary passes only on exit 0, `status == "complete"`, at least three completed pages and the product-count floor. Without the required secret the job fails with an error naming it: a canary that skips green tests nothing. It deliberately does not assert a price floor: without `--with-pricing`, `price_confirmed_pct` of 0 is correct here.
 
 ## 13. What "done" looks like
 

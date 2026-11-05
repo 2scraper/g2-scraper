@@ -74,6 +74,7 @@ All notable changes to this project are documented here. Format follows
 
 ### Changed
 
+- CI only: the scheduled canary now starts at 09:27 UTC (Mondays) instead of 07:17, so canaries that share one Scraping Browser profile no longer start at the same time and lock each other out.
 - CI only: both canary jobs bill a paid route (`G2_PROXY`, `G2_CDP_ENDPOINT`),
   so the canary now runs weekly (Mondays 07:17 UTC) instead of daily; a manual
   dispatch still runs it.
