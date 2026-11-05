@@ -817,3 +817,81 @@ def parse_datadome_cookie(solution: str) -> dict:
         "secure": bool(attrs.get("secure", True)),
         "same_site": attrs.get("samesite", "Lax"),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Scraping Browser auto-solve: wait for it, then judge the page it left.
+#
+# Over --cdp-endpoint the managed browser solves a challenge on its own
+# (`Captcha.setAutoSolve`) and the site then reloads the page. The first
+# navigation's response is the challenge (DataDome answers it with HTTP 403),
+# so classifying the page from that status, or from the HTML a moment after
+# `domcontentloaded`, reports a block for a page that is about to be served.
+# The engines record the CDP events here and, when a challenge was detected,
+# wait for the solve to end and for real content before classifying.
+# --------------------------------------------------------------------------- #
+AUTOSOLVE_FINISH_TIMEOUT_S = 60.0   # Captcha.detected -> solveFinished/solveFailed
+AUTOSOLVE_CONTENT_TIMEOUT_S = 20.0  # solve ended -> real content rendered
+AUTOSOLVE_POLL_S = 1.0
+
+
+class AutoSolveEvents:
+    """Counts the Scraping Browser's `Captcha.*` CDP events for one page,
+    and the HTTP status of the latest main-document response."""
+
+    def __init__(self) -> None:
+        self.detected = 0
+        self.finished = 0
+        self.failed = 0
+        self.document_status: Optional[int] = None
+
+    def on_detected(self, *_args) -> None:
+        self.detected += 1
+
+    def on_finished(self, *_args) -> None:
+        self.finished += 1
+
+    def on_failed(self, *_args) -> None:
+        self.failed += 1
+
+    def mark(self) -> int:
+        """Detections so far; pass to `settle_after_autosolve` after a navigation."""
+        return self.detected
+
+    def pending(self, since: int) -> bool:
+        """A challenge was detected after `since` and has not ended yet."""
+        return self.detected > since and self.finished + self.failed < self.detected
+
+
+async def settle_after_autosolve(
+    events: Optional[AutoSolveEvents], since: int, read_html, has_content: Callable[[str], bool],
+    sleep, *, finish_timeout: float = AUTOSOLVE_FINISH_TIMEOUT_S,
+    content_timeout: float = AUTOSOLVE_CONTENT_TIMEOUT_S, poll: float = AUTOSOLVE_POLL_S,
+) -> Optional[str]:
+    """Returns the page HTML once the managed browser's solve has ended and
+    `has_content` holds, the last HTML read when it never does, or None when
+    no challenge was detected since `since` (nothing to wait for).
+
+    `read_html` and `sleep(seconds)` are the engine's own coroutines, so this
+    works for both Playwright and pyppeteer. A read that fails mid-reload is
+    retried on the next poll."""
+    if events is None or events.detected <= since:
+        return None
+    waited = 0.0
+    while events.pending(since) and waited < finish_timeout:
+        await sleep(poll)
+        waited += poll
+    html = ""
+    waited = 0.0
+    while True:
+        try:
+            html = await read_html()
+        except Exception:  # noqa: BLE001 - the document is being replaced; read it again
+            html = html or ""
+        else:
+            if has_content(html):
+                return html
+        if waited >= content_timeout:
+            return html
+        await sleep(poll)
+        waited += poll

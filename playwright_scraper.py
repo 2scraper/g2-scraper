@@ -87,7 +87,8 @@ import env_config
 import proxy_meter
 import g2_parser as gp
 from captcha_solver import (
-    CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie, solve_when_blocked,
+    AutoSolveEvents, CaptchaType, build_injection_script, detect_from_html, parse_datadome_cookie,
+    settle_after_autosolve, solve_when_blocked,
 )
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, LOAD_FAILED, Product, finish_run, merge_pages, precheck_or_stop, sku_key as _sku_key
@@ -327,7 +328,7 @@ def _media_policy(args: argparse.Namespace, proxy: Optional[Proxy]) -> bool:
                               over_cdp=bool(args.cdp_endpoint))
 
 
-async def _enable_scraping_browser_auto_solve(context: BrowserContext, page: Page) -> None:
+async def _enable_scraping_browser_auto_solve(context: BrowserContext, page: Page) -> Optional[AutoSolveEvents]:
     """Arm 2Captcha's Scraping Browser `Captcha.setAutoSolve` CDP domain.
 
     Only meaningful over `--cdp-endpoint` (a locally-launched Chromium has
@@ -339,15 +340,66 @@ async def _enable_scraping_browser_auto_solve(context: BrowserContext, page: Pag
     that gap (its puppeteer `scrape_product_page()` accepted an `autosolve`
     parameter and never used it) and smoke_test.py now enforces the
     invariant structurally, at AST level, for this repo's three engines.
+
+    Returns the page's `AutoSolveEvents` (None when the domain is
+    unavailable): the caller passes it to `_settle_autosolve()` after each
+    navigation, so a page the managed browser is still solving is not
+    classified from the challenge's own HTTP 403.
     """
+    events = AutoSolveEvents()
+
+    def _on_detected(*_):
+        events.on_detected()
+        log.info("[Scraping Browser API] captcha detected")
+
+    def _on_finished(*_):
+        events.on_finished()
+        log.info("[Scraping Browser API] captcha solved")
+
+    def _on_failed(*_):
+        events.on_failed()
+        log.warning("[Scraping Browser API] captcha solve failed")
+
+    def _on_response(response):
+        try:
+            if response.request.is_navigation_request() and response.frame == page.main_frame:
+                events.document_status = response.status
+        except Exception:  # noqa: BLE001 — a detached frame; the status stays as it was
+            pass
+
     try:
         session = await context.new_cdp_session(page)
-        session.on("Captcha.detected", lambda *_: log.info("[Scraping Browser API] captcha detected"))
-        session.on("Captcha.solveFinished", lambda *_: log.info("[Scraping Browser API] captcha solved"))
-        session.on("Captcha.solveFailed", lambda *_: log.warning("[Scraping Browser API] captcha solve failed"))
+        session.on("Captcha.detected", _on_detected)
+        session.on("Captcha.solveFinished", _on_finished)
+        session.on("Captcha.solveFailed", _on_failed)
         await session.send("Captcha.setAutoSolve", {"autoSolve": True, "options": [{"type": "*"}]})
     except Exception as exc:  # noqa: BLE001 — optional enhancement, never fatal
         log.warning("Captcha.setAutoSolve unavailable on this CDP session (continuing without it): %s", exc)
+        return None
+    page.on("response", _on_response)
+    return events
+
+
+async def _settle_autosolve(page: Page, events: Optional[AutoSolveEvents], since: int,
+                            status: Optional[int], html: str, has_content) -> Tuple[Optional[int], str]:
+    """After a navigation over --cdp-endpoint: when the managed browser
+    detected a challenge on it, wait for its solve to end and for the page's
+    real content (`has_content(html)`), then return the status of the
+    document actually served and its HTML. Otherwise `(status, html)`
+    unchanged. A page that never gets content keeps its original status, so
+    a refusal is still reported as one."""
+    settled = await settle_after_autosolve(
+        events, since, page.content, has_content, asyncio.sleep)
+    if settled is None:
+        return status, html
+    if has_content(settled):
+        served = events.document_status if events.document_status is not None else status
+        if status is not None and status >= 400 and (served is None or served >= 400):
+            served = None  # content rendered after the solve; the 4xx was the challenge itself
+        log.info("Page content arrived after the Scraping Browser API's solve (first response HTTP %s).", status)
+        return served, settled
+    log.warning("The Scraping Browser API detected a challenge here and no page content followed it.")
+    return status, settled
 
 
 async def _maybe_solve_captcha(
@@ -635,8 +687,7 @@ async def scrape_category(
     log.info("Using proxy %s", proxy.masked() if proxy else "(no local proxy pool — direct connection, or a --cdp-endpoint session providing its own exit)")
     context = await _new_context(browser, proxy, user_agent, block_media=_media_policy(args, proxy))
     page = await context.new_page()
-    if autosolve:
-        await _enable_scraping_browser_auto_solve(context, page)
+    solve_events = await _enable_scraping_browser_auto_solve(context, page) if autosolve else None
 
     seen_skus: set = set()
     pages: List[List[Product]] = []
@@ -646,6 +697,7 @@ async def scrape_category(
         if proxy_meter.exceeded():
             break  # --proxy-budget-mb is spent; finish_run names the stop
         page_url = gp.category_url(slug, page_num) if slug else start_url
+        solve_mark = solve_events.mark() if solve_events else 0
         status, last_error = await _goto_with_retries(
             page, page_url, retries=args.retries, retry_delay=args.retry_delay,
             proxy_pool=proxy_pool, proxy=proxy,
@@ -689,6 +741,9 @@ async def scrape_category(
             log.warning("Could not read page %d's content: %s", page_num, exc)
             failed_pages.append(page_num)
             continue
+        status, html = await _settle_autosolve(
+            page, solve_events, solve_mark, status, html,
+            lambda h: gp.count_result_cards(h) >= MIN_CARD_MATCHES)
         last_html = html
 
         if status == 404:
@@ -821,9 +876,9 @@ async def scrape_product_page(
     proxy = proxy_pool.next() if proxy_pool else None
     context = await _new_context(browser, proxy, user_agent, block_media=_media_policy(args, proxy))
     page = await context.new_page()
-    if autosolve:
-        await _enable_scraping_browser_auto_solve(context, page)
+    solve_events = await _enable_scraping_browser_auto_solve(context, page) if autosolve else None
 
+    solve_mark = solve_events.mark() if solve_events else 0
     status, last_error = await _goto_with_retries(
         page, start_url, retries=args.retries, retry_delay=args.retry_delay,
         proxy_pool=proxy_pool, proxy=proxy,
@@ -835,6 +890,9 @@ async def scrape_product_page(
             return [], LOAD_FAILED, False, 0, [1]
         return [], False, True, 0, [1]
 
+    status, html = await _settle_autosolve(
+        page, solve_events, solve_mark, status, await page.content(),
+        lambda h: gp.count_product_page_data(h) > 0)
     not_found = status == 404
     if not_found:
         log.warning("Product page returned HTTP 404 — g2.com has no product at this address; check "
@@ -843,7 +901,6 @@ async def scrape_product_page(
         log.warning("Product page returned HTTP %d — treating as blocked, not empty.", status)
         blocked = True
 
-    html = await page.content()
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS):
         captcha_result = await _maybe_solve_captcha(
             html=html, url=start_url, client=client, policy=args.solve_captcha,
@@ -915,9 +972,9 @@ async def scrape_pricing_page(
     proxy = proxy_pool.next() if proxy_pool else None
     context = await _new_context(browser, proxy, user_agent, block_media=_media_policy(args, proxy))
     page = await context.new_page()
-    if autosolve:
-        await _enable_scraping_browser_auto_solve(context, page)
+    solve_events = await _enable_scraping_browser_auto_solve(context, page) if autosolve else None
 
+    solve_mark = solve_events.mark() if solve_events else 0
     status, last_error = await _goto_with_retries(
         page, start_url, retries=args.retries, retry_delay=args.retry_delay,
         proxy_pool=proxy_pool, proxy=proxy,
@@ -929,10 +986,12 @@ async def scrape_pricing_page(
             return [], LOAD_FAILED, False
         return [], False, True
 
+    status, html = await _settle_autosolve(
+        page, solve_events, solve_mark, status, await page.content(),
+        lambda h: gp.count_pricing_tiers(h) > 0)
     if status == 404:
         log.warning("Pricing page returned HTTP 404 — this product has no pricing page. Not a block.")
     blocked = bool(status is not None and status >= 400 and status != 404)
-    html = await page.content()
     if detect_from_html(html, gp.BOT_CHALLENGE_MARKERS):
         captcha_result = await _maybe_solve_captcha(
             html=html, url=start_url, client=client, policy=args.solve_captcha,
