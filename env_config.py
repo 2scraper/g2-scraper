@@ -51,11 +51,11 @@ ENV_KEYS: Dict[str, str] = {
 
 _PLACEHOLDER_RE = re.compile(r"^\s*$")
 # a copied .env.example can document a credentialled URL the
-# way the vendor documents it — `ws://{login}-zone-...-pid-{profileId}:
+# way the dashboard gives it — `ws://{login}-country-{cc}-pid-{profileId}:
 # {password}@cb.2captcha.com:9222` — and a literal-placeholder check (an
 # exact string like "your_key_here") never matches that shape, so pasting
 # the DOCUMENTED example past the `=` reads as configured: a run then
-# authenticates to the real host as the literal string "{login}-zone-…" and
+# authenticates to the real host as the literal string "{login}-country-…" and
 # fails with a confusing 401 far from its actual cause. This repo's own
 # .env.example currently ships blank `KEY=` lines (not a literal braced
 # value), so the historical incident hasn't happened here — this is

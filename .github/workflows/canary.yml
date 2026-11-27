@@ -142,7 +142,7 @@ jobs:
         run: |
           echo "::error::canary-cdp cannot test g2.com: the G2_CDP_ENDPOINT repo secret is not set. \
           Add a 2Captcha Scraping Browser endpoint \
-          (ws://{login}-zone-scraping_browser-country-us-pid-{profileId}:{password}@cb.2captcha.com:9222) \
+          (ws://{login}-country-us-pid-{profileId}:{password}@cb.2captcha.com:9222) \
           under Settings > Secrets > Actions; TWOCAPTCHA_KEY is optional here."
           exit 1
 
